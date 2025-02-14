@@ -1,83 +1,96 @@
 # Investment Strategy Optimization System
 
 ## Overview
-This project is an **automated investment strategy optimizer** that:
-- Fetches **real-time market data** from Yahoo Finance (stocks/ETFs) and Binance (cryptos).
-- Analyzes **market sentiment** using DeepSeek AI.
-- Computes **technical indicators** (RSI, MACD, SMA) to filter high-potential assets.
-- Performs **backtesting** on selected assets.
-- **Optimizes portfolio allocation** using **risk-based constraints** and **return maximization**.
 
-## Key Features
-### **1️⃣ Market Data Fetching**
-- **Stocks & ETFs** → Yahoo Finance (`yfinance` API).
-- **Cryptocurrencies** → Binance API.
-- Ensures **live market data integration**.
+This project is a comprehensive **Investment Strategy Platform** that integrates machine learning models, market data, technical analysis, and backtesting to provide optimized investment strategies. It dynamically selects the best prediction model based on asset type and volatility.
 
-### **2️⃣ Sentiment Analysis**
-- Calls DeepSeek API to analyze **financial news & trends**.
-- Assets with **strong positive sentiment** get higher allocation boosts.
+## Features
 
-### **3️⃣ Technical Indicator Analysis**
-- Uses **RSI (Relative Strength Index)** to detect momentum.
-- Uses **MACD (Moving Average Convergence Divergence)** for trend confirmation.
-- Uses **SMA (50-day Simple Moving Average)** for stability check.
+- **Stock, ETF, and Cryptocurrency Price Prediction**
+  - Uses **Hybrid Models (XGBoost + ARIMA)** for stock price prediction.
+  - Uses **ARIMA** for ETFs.
+  - Uses **LSTM** for cryptocurrency predictions.
+  - Dynamically selects models based on asset volatility.
+- **Market Data Integration**
+  - Fetches historical and real-time data from **Binance** and **Yahoo Finance**.
+- **Sentiment Analysis**
+  - Uses **DeepSeek AI** to analyze financial sentiment for better investment insights.
+- **Technical Analysis**
+  - Computes indicators like **SMA, RSI, MACD** for enhanced decision-making.
+- **Backtesting**
+  - Runs historical performance tests on investment strategies.
+- **Portfolio Optimization**
+  - Builds optimized portfolios based on **risk level, sentiment, technical analysis, and backtesting results**.
 
-### **4️⃣ Backtesting for Performance Validation**
-- Runs **historical performance tests** on selected assets.
-- Compares asset returns **against S&P 500 benchmark**.
-- Rejects assets with underperformance.
+## Model Selection
 
-### **5️⃣ Portfolio Optimization**
-- Uses **Scipy’s `minimize()` function** to find the best asset allocation.
-- **Diversifies assets** to reduce risk while maximizing returns.
-- Ensures **total portfolio allocation = 100%**.
-
-### **6️⃣ Risk-Based Filtering**
-- Allows users to select **Low, Medium, or High risk profiles**.
-- Filters assets based on **volatility & asset class constraints**.
-
-## How It Works
-1. **User Inputs** → Risk level, investment timeframe, initial capital.
-2. **Market Analysis** → Fetches data, calculates indicators, and sentiment scores.
-3. **Filtering & Backtesting** → Removes weak assets, retains high-performing ones.
-4. **Portfolio Optimization** → Allocates funds based on **return vs. risk trade-offs**.
-5. **Final Output** → Recommends the **top 10 assets** with an optimized allocation.
-6. **Portfolio Backtesting** → Validates performance before execution.
+| Asset Type               | Model Used               |
+| ------------------------ | ------------------------ |
+| Stocks (Low Volatility)  | XGBoost                  |
+| Stocks (High Volatility) | Hybrid (XGBoost + ARIMA) |
+| ETFs                     | ARIMA                    |
+| Cryptocurrencies         | LSTM                     |
 
 ## Installation
-```bash
-# Clone repository
-git clone https://github.com/daocha/investment-strategy.git
-cd investment-strategy
 
-# Install dependencies
-pip install -r requirements.txt
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/daocha/investment-strategy.git
+   cd investment-strategy
+   ```
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Run the backend:
+   ```bash
+   python main.py
+   ```
+4. Start the frontend:
+   ```bash
+   npm install
+   npm start
+   ```
 
-# Run the backend
-python main.py
+## Usage
 
-# Run the frontend
-cd investment-ui
-npm install
-npm start
+### Predict Price for an Asset
+
+```python
+from price_prediction import predict_stock_price, predict_etf_price, predict_crypto_price
+
+# Predict stock price 6 months ahead
+predicted_price = predict_stock_price("MSTR", months_ahead=6)
+print("Predicted Price:", predicted_price)
+```
+
+### Generate an Optimized Investment Strategy
+
+```python
+from portfolio_optimizer import generate_strategy
+
+strategy = generate_strategy(risk_level="medium", timeframe=6, initial_amount=10000)
+print("Optimized Portfolio:", strategy)
 ```
 
 ## API Endpoints
-- `POST /generate-strategy` → Generates an optimized portfolio.
-- `GET /market-data` → Fetches current market data.
-- `GET /backtest-results` → Runs historical performance tests.
 
-## Frontend (React UI)
-- Displays **investment recommendations in a pie chart**.
-- Shows **expected portfolio return vs. S&P 500 benchmark**.
-- Allows users to **input risk level, timeframe, and capital**.
+| Method | Endpoint             | Description                                |
+| ------ | -------------------- | ------------------------------------------ |
+| POST   | `/generate-strategy` | Generates an optimized investment strategy |
 
-## Future Enhancements
-- Integrate **Machine Learning for better trend prediction**.
-- Add **real-time portfolio tracking with API integrations**.
-- Implement **automated execution via brokerage API**.
+## Future Improvements
 
----
-📈 **Designed for investors who want an automated, data-driven portfolio strategy.** 🚀
+- Implement **Reinforcement Learning** for dynamic trading strategies.
+- Enhance **Sentiment Analysis** by integrating social media and news sentiment.
+- Develop **Automated Trading** features for executing strategies in real-time.
+- Expand **Multi-Asset Portfolio Optimization** with additional asset classes.
+
+## Contributors
+
+- Ray LI (@daocha)
+
+## License
+
+MIT License
 
