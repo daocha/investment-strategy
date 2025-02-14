@@ -6,3 +6,5 @@ scipy
 yfinance
 requests
 matplotlib
+statsmodels
+tensorflow

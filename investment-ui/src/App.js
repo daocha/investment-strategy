@@ -92,7 +92,13 @@ const App = () => {
 
       {backtestResults && (
         <div style={{ marginTop: "20px", fontSize: "18px", fontWeight: "bold" }}>
-          📈 <span style={{ color: "green" }}>Portfolio Backtested Return: {backtestResults.portfolio_annual_return.toFixed(2)}%</span>
+          📈 <span style={{ color: "green" }}>Portfolio Pridicted Return: {backtestResults.portfolio_predicted_return.toFixed(2)}%</span>
+        </div>
+      )}
+
+      {backtestResults && (
+        <div style={{ marginTop: "20px", fontSize: "18px", fontWeight: "bold" }}>
+          📈 <span style={{ color: "green" }}>Portfolio Backtested Annual Return: {backtestResults.portfolio_backtest_return.toFixed(2)}%</span>
         </div>
       )}
 
@@ -133,16 +139,26 @@ const App = () => {
             <thead>
               <tr style={{ backgroundColor: "#f2f2f2" }}>
                 <th style={{ padding: "10px", borderBottom: "2px solid #ddd" }}>Asset</th>
-                <th style={{ padding: "10px", borderBottom: "2px solid #ddd" }}>Annual Return (%)</th>
-                <th style={{ padding: "10px", borderBottom: "2px solid #ddd" }}>Weighted Return (%)</th>
+                <th style={{ padding: "10px", borderBottom: "2px solid #ddd" }}>Category</th>
+                <th style={{ padding: "10px", borderBottom: "2px solid #ddd" }}>Current Price ($)</th>
+                <th style={{ padding: "10px", borderBottom: "2px solid #ddd" }}>Predicted Price ($)</th>
+                <th style={{ padding: "10px", borderBottom: "2px solid #ddd" }}>Predicted Return (%)</th>
+                <th style={{ padding: "10px", borderBottom: "2px solid #ddd" }}>Backtest Annual Return (%)</th>
+                <th style={{ padding: "10px", borderBottom: "2px solid #ddd" }}>Combined Return (%)</th>
+                <th style={{ padding: "10px", borderBottom: "2px solid #ddd" }}>Weighted Backtest Return (%)</th>
               </tr>
             </thead>
             <tbody>
               {backtestResults.asset_returns.map((result, index) => (
                 <tr key={index}>
                   <td style={{ padding: "10px", borderBottom: "1px solid #ddd" }}>{result.asset}</td>
-                  <td style={{ padding: "10px", borderBottom: "1px solid #ddd" }}>{result.annual_return.toFixed(2)}%</td>
-                  <td style={{ padding: "10px", borderBottom: "1px solid #ddd" }}>{result.weighted_return.toFixed(2)}%</td>
+                  <td style={{ padding: "10px", borderBottom: "1px solid #ddd" }}>{result.category}</td>
+                  <td style={{ padding: "10px", borderBottom: "1px solid #ddd" }}>{result.current_price.toFixed(2)}</td>
+                  <td style={{ padding: "10px", borderBottom: "1px solid #ddd" }}>{result.predicted_price.toFixed(2)}</td>
+                  <td style={{ padding: "10px", borderBottom: "1px solid #ddd" }}>{result.predicted_return.toFixed(2)}%</td>
+                  <td style={{ padding: "10px", borderBottom: "1px solid #ddd" }}>{result.backtest_annual_return.toFixed(2)}%</td>
+                  <td style={{ padding: "10px", borderBottom: "1px solid #ddd" }}>{result.combined_return.toFixed(2)}%</td>
+                  <td style={{ padding: "10px", borderBottom: "1px solid #ddd" }}>{result.weighted_backtest_return.toFixed(2)}%</td>
                 </tr>
               ))}
             </tbody>

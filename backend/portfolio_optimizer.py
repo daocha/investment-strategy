@@ -5,6 +5,7 @@ from market_data import fetch_market_data
 from sentiment_analysis import analyze_sentiment
 from technical_analysis import calculate_indicators
 from backtesting import backtest_strategy
+from price_prediction import predict_price  # Importing the updated price prediction model
 import logging
 import re
 import yfinance as yf
@@ -20,6 +21,7 @@ RISK_SETTINGS = {
 }
 RSI_THRESHOLD = 50
 MACD_THRESHOLD = 0
+MAX_NUM_ASSETS = 10
 
 def get_sp500_annual_return():
     """Fetches the S&P 500 annual return as a benchmark and converts it to decimal."""
@@ -96,29 +98,45 @@ def backtest_portfolio(portfolio_allocation):
     """Runs backtesting for the entire portfolio and calculates overall performance."""
     logging.info("Running portfolio-wide backtesting...")
 
-    total_portfolio_return = 0
+    total_portfolio_backtest_return = 0
+    total_portfolio_predicted_return = 0
     asset_returns = []
 
     for asset_data in portfolio_allocation:
         asset = asset_data["asset"]
-        cateogy = asset_data["category"]
+        category = asset_data["category"]
         allocation_pct = asset_data["allocation_pct"] / 100  # Convert to decimal
 
         logging.info(f"Backtesting asset: {asset} (Allocation: {allocation_pct:.2%})")
-        backtest_result = backtest_strategy(asset, cateogy)
 
-        asset_return = parse_annual_return(backtest_result.get("annual_return"))
-        if asset_return is not None:
-            weighted_return = asset_return * allocation_pct
-            total_portfolio_return += weighted_return
-            asset_returns.append({"asset": asset, "annual_return": asset_return * 100, "weighted_return": weighted_return * 100})
+        current_price = asset_data["current_price"]
+        predicted_price = asset_data["predicted_price"]
+        predicted_return = asset_data["predicted_return"]
+        combined_return = asset_data["combined_return"]
+        backtest_annual_return = asset_data["backtest_annual_return"]
+        weighted_predicted_return = predicted_return * allocation_pct
+        weighted_backtest_return = backtest_annual_return * allocation_pct
+        total_portfolio_backtest_return += weighted_backtest_return
+        total_portfolio_predicted_return += weighted_predicted_return
+        asset_returns.append({"asset": asset, "category": category, "current_price": current_price, "predicted_price": predicted_price, "predicted_return": predicted_return * 100, "weighted_predicted_return": weighted_predicted_return * 100, "weighted_backtest_return": weighted_backtest_return * 100, "backtest_annual_return": backtest_annual_return * 100, "combined_return": combined_return * 100})
 
-    logging.info(f"Final portfolio backtest return: {total_portfolio_return * 100:.2f}%")
+    logging.info(f"Final portfolio backtest return: {total_portfolio_backtest_return * 100:.2f}%")
 
     return {
-        "portfolio_annual_return": round(total_portfolio_return * 100, 2),
+        "portfolio_predicted_return": round(total_portfolio_predicted_return * 100, 2),
+        "portfolio_backtest_return": round(total_portfolio_backtest_return * 100, 2),
         "asset_returns": asset_returns
     }
+
+def convert_floats(obj):
+    """Recursively converts NumPy float32 to native Python float."""
+    if isinstance(obj, np.float32) or isinstance(obj, np.float64):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_floats(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_floats(i) for i in obj]
+    return obj
 
 def generate_strategy(risk_level, timeframe, initial_amount):
     """
@@ -169,25 +187,35 @@ def generate_strategy(risk_level, timeframe, initial_amount):
             sentiment_trend == "positive"
             or (sentiment_trend == "neutral" and indicators.get("RSI") > RSI_THRESHOLD and indicators.get("MACD") > MACD_THRESHOLD)
         ):
-            logging.info(f"Running backtesting for {asset}...")
+            logging.info(f"Running backtesting for {asset} ({category})...")
             backtest_result = backtest_strategy(asset, category)
+            backtest_annual_return = parse_annual_return(backtest_result.get("annual_return"))
 
-            annual_return = parse_annual_return(backtest_result.get("annual_return"))
+            logging.info(f"Running price prediction for {asset} ({category})...")
+            predicted_price = predict_price(asset, category, timeframe)
+            if predicted_price is None:
+                logging.warning(f"Skipping {asset} due to failure in price prediction.")
+                continue
 
-            if annual_return is not None:
-                logging.info(f"Asset: {asset}, Annual Return: {annual_return * 100:.2f}%")
+            current_price = market_data[category][asset]["Close"]
+            predicted_return = (predicted_price - current_price) / current_price
+            combined_return = (backtest_annual_return * 0.6) + (predicted_return * 0.4)  # Weighted avg of past & future returns
+            logging.info(f"Predicted return for {asset}: {predicted_return * 100:.2f}%, backtest return: {backtest_annual_return * 100:.2f}%, combined return: {combined_return * 100:.2f}%")
 
-                if annual_return < MINIMUM_ANNUAL_RETURN:
-                    logging.warning(f"Skipping {asset}: Annual return {annual_return * 100:.2f}% is below S&P 500 benchmark.")
-                else:
-                    asset_volatility = np.random.uniform(0.1, 0.5)  # Replace with actual calculation
-                    weight_boost = 1.3 if sentiment_trend == "positive" else 1.0
-                    asset_performance.append({
-                        "asset": asset,
-                        "category": asset_category_map[asset],
-                        "annual_return": annual_return * weight_boost,  # Boosted allocation for strong sentiment
-                        "volatility": asset_volatility
-                    })
+            if combined_return < MINIMUM_ANNUAL_RETURN:
+                logging.warning(f"Skipping {asset} due to combined return {combined_return * 100:.2f}% lower return than S&P 500 benchmark.")
+                continue
+
+            asset_performance.append({
+                "asset": asset,
+                "category": category,
+                "current_price": current_price,
+                "combined_return": combined_return,
+                "backtest_annual_return": backtest_annual_return,
+                "predicted_return": predicted_return,
+                "predicted_price": predicted_price,
+                "volatility": np.random.uniform(0.1, 0.5)  # Replace with actual calculation
+            })
 
     logging.info(f"Total assets meeting sentiment, RSI, MACD, and return criteria: {len(asset_performance)}")
 
@@ -198,15 +226,15 @@ def generate_strategy(risk_level, timeframe, initial_amount):
     # Apply Risk-Based Filtering
     asset_performance = filter_by_risk(asset_performance, risk_level)
 
-    # Select the Top 10 Best-Performing Assets
-    asset_performance = sorted(asset_performance, key=lambda x: x["annual_return"], reverse=True)[:10]
+    # Select the Top 10(MAX_NUM_ASSETS) Best-Performing Assets
+    asset_performance = sorted(asset_performance, key=lambda x: x["combined_return"], reverse=True)[:MAX_NUM_ASSETS]
 
     logging.info(f"Top 10 best-performing assets selected: {asset_performance}")
 
     # **Portfolio Optimization**
     num_assets = len(asset_performance)
     np.random.seed(42)
-    returns = np.random.rand(num_assets)
+    returns = np.array([entry["combined_return"] for entry in asset_performance])
     cov_matrix = np.random.rand(num_assets, num_assets)
 
     def portfolio_volatility(weights):
@@ -217,25 +245,23 @@ def generate_strategy(risk_level, timeframe, initial_amount):
     constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
 
     logging.info("Running portfolio optimization...")
+
+    # optimize the portfolio
     result = minimize(portfolio_volatility, initial_guess, method="SLSQP", bounds=bounds, constraints=constraints)
-
-    # **Ensure Sum is Exactly 100%**
-    weights = np.array(result.x)
-
-    # Fix issue where weights might not sum exactly to 1
-    total_weight = np.sum(weights)
-    if total_weight != 1:
-        logging.warning(f"⚠️ Portfolio weight sum before normalization: {total_weight:.4f}")
-        weights /= total_weight  # Normalize to ensure total allocation is exactly 100%
 
     portfolio_allocation = [
         {
             "asset": entry["asset"],
             "category": entry["category"],
+            "current_price": round(entry["current_price"], 2),
+            "combined_return": round(entry["combined_return"], 4),
+            "backtest_annual_return": round(entry["backtest_annual_return"], 4),
+            "predicted_return": round(entry["predicted_return"], 4),
+            "predicted_price": round(entry["predicted_price"], 2),
             "allocation": round(alloc * initial_amount, 2),
             "allocation_pct": round(alloc * 100, 2)
         }
-        for entry, alloc in zip(asset_performance, weights)
+        for entry, alloc in zip(asset_performance, result.x)
     ]
 
     logging.info(f"Final optimized portfolio allocation: {portfolio_allocation}")
@@ -243,7 +269,7 @@ def generate_strategy(risk_level, timeframe, initial_amount):
     # **Run Portfolio Backtesting**
     portfolio_backtest_results = backtest_portfolio(portfolio_allocation)
 
-    return {
+    return convert_floats({
         "portfolio_allocation": portfolio_allocation,
         "backtest_results": portfolio_backtest_results
-    }
+    })
