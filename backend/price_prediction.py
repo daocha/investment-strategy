@@ -20,8 +20,13 @@ def calculate_volatility(prices):
 def predict_stock_price(asset, months_ahead=1):
     """Predicts the price of a stock in x months using a Hybrid Model (LSTM + Random Forest) based on volatility."""
     stock_data = yf.Ticker(asset).history(period="1y")
-    if stock_data.empty:
+
+    # Check if the dataset is empty
+    if stock_data.empty or "Close" not in stock_data:
         return None
+
+    # Drop rows with NaN values in the "Close" column
+    stock_data = stock_data.dropna(subset=["Close"])
 
     volatility = calculate_volatility(stock_data["Close"])
     logging.info(f"Detected volatility for {asset}: {volatility:.4f}")
