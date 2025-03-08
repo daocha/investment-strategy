@@ -5,7 +5,7 @@ import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
-const API_URL = "http://localhost:5000/generate-strategy"; // Backend API URL
+const API_URL = "http://localhost:8848/generate-strategy"; // Backend API URL
 
 const App = () => {
   const [riskLevel, setRiskLevel] = useState("medium");
