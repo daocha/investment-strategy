@@ -35,8 +35,13 @@ const App = () => {
   };
 
   const validatePortfolioCSV = (input) => {
-    // Treat "myself" or empty string as valid (load default portfolio from file)
-    if (!input || input.trim().toLowerCase() === "myself" || input.trim() === "") {
+    // Check for empty input (whitespace-only)
+    if (!input || input.trim() === "") {
+      return "Portfolio data cannot be empty.";
+    }
+
+    // Treat "myself" as valid (load default portfolio from file)
+    if (input.trim().toLowerCase() === "myself") {
       return null;
     }
 
