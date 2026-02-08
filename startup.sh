@@ -32,9 +32,9 @@ BACKEND_PID=$!
 
 # 4. Launch Frontend
 if [ -d "$FRONTEND_DIR" ]; then
-    echo "⚛️ Starting React Frontend..."
+    echo "⚛️ Starting React Frontend on port 3848..."
     cd $FRONTEND_DIR
-    npm start
+    PORT=3848 npm start
 else
     echo "❌ Error: Cannot start frontend. Directory missing."
     kill $BACKEND_PID
