@@ -6,10 +6,10 @@ This project is a comprehensive **Investment Strategy Platform** that integrates
 
 ## Features
 
-- **Stock, ETF, and Cryptocurrency Price Prediction**
+- **Stock, ETF, and Crypto Price Prediction**
   - Uses **Hybrid Models (XGBoost + ARIMA)** for stock price prediction.
   - Uses **ARIMA** for ETFs.
-  - Uses **LSTM** for cryptocurrency predictions.
+  - Uses **LSTM** for crypto predictions.
   - Dynamically selects models based on asset volatility.
 - **Market Data Integration**
   - Fetches historical and real-time data from **Binance** and **Yahoo Finance**.
@@ -29,7 +29,7 @@ This project is a comprehensive **Investment Strategy Platform** that integrates
 | Stocks (Low Volatility)  | XGBoost                  |
 | Stocks (High Volatility) | Hybrid (XGBoost + ARIMA) |
 | ETFs                     | ARIMA                    |
-| Cryptocurrencies         | LSTM                     |
+| Crypto                   | LSTM                     |
 
 ## Installation
 
@@ -85,6 +85,22 @@ print("Optimized Portfolio:", strategy)
 - Enhance **Sentiment Analysis** by integrating social media and news sentiment.
 - Develop **Automated Trading** features for executing strategies in real-time.
 - Expand **Multi-Asset Portfolio Optimization** with additional asset classes.
+
+## LAN Access
+To access the application from other devices on your local network:
+1. Ensure the backend is running (it binds to `0.0.0.0` by default).
+2. Access the frontend via `http://YOUR_LOCAL_IP:3000`. The API URL is dynamically detected.
+
+## Troubleshooting
+
+### Frontend Launch Failed
+If you encounter a blank page or "Launch Failed" error in the frontend:
+- Ensure the backend is running on port 8848.
+- Check the browser console -> if you see errors related to `pieChartData`, pull the latest code as this was fixed in a recent update.
+- Verify `node_modules` are installed (`npm install`).
+
+### XGBoost Model Warning
+If you see `XGBoost model not found`, this is normal on a fresh install. The system will function using fallback predictions or default to "Hold" signals until the model is trained. The `xgboost_model.json` file is ignored in git to prevent large file uploads.
 
 ## Contributors
 

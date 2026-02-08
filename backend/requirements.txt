@@ -1,12 +1,15 @@
 flask
 flask-cors
-numpy
-pandas
+numpy>=2.1.0  # Python 3.13 support
+pandas>=2.2.0
 scipy
 yfinance
 requests
 matplotlib
 statsmodels
-tensorflow
+# tensorflow  # Not yet supported on Python 3.13
 backtrader
-sklearn
+scikit-learn  # Correct name for sklearn
+xgboost
+joblib
+python-dotenv

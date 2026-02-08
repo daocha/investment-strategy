@@ -22,3 +22,8 @@ __pycache__/
 # Logs/Data
 *.log
 *.db
+
+.python-version
+market_data_cache.json
+my_portfolio.csv
+backend/xgboost_model.json
