@@ -112,6 +112,7 @@ const App = () => {
         asset_returns: sortedAssetReturns
       };
       setBacktestResults(results);
+      setLoading(false);
 
       // Auto-show and auto-run verification
       setShowVerification(true);
@@ -119,8 +120,8 @@ const App = () => {
     } catch (err) {
       console.error(err);
       setError("Error fetching portfolio. Please try again.");
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const fetchPortfolioAnalysis = async () => {
@@ -154,15 +155,16 @@ const App = () => {
         asset_returns: sortedAssetReturns
       };
       setBacktestResults(results);
+      setLoading(false);
 
-      // Auto-show and auto-run verification
+      console.log("🚀 Triggering background verification for custom portfolio...");
       setShowVerification(true);
       runVerification(sortedAssetReturns, parseInt(timeframe, 10));
     } catch (err) {
       console.error(err);
       setError("Error analyzing portfolio. Please check your input format and try again.");
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const runVerification = async (holdingsData = null, tfOverride = null) => {
@@ -176,6 +178,7 @@ const App = () => {
 
     setIsVerifying(true);
     setErrorV(null);
+    console.log("🔄 Verification simulation started in background...");
     try {
       const holdings = currentResults.map(a => ({
         asset: a.asset,
@@ -186,8 +189,13 @@ const App = () => {
         holdings,
         timeframe: currentTf
       });
-      if (res.data.error) setErrorV(res.data.error);
-      else setVerificationResults(Array.isArray(res.data) ? res.data : []);
+      if (res.data.error) {
+        setErrorV(res.data.error);
+      } else {
+        const results = Array.isArray(res.data) ? res.data : [];
+        console.log(`✅ Verification complete. Received ${results.length} results.`);
+        setVerificationResults(results);
+      }
     } catch (err) {
       console.error(err);
       setErrorV("Failed to run verification simulation.");
