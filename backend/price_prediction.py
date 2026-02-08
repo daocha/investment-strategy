@@ -24,23 +24,36 @@ class CryptoXGBoost:
             'RSI', 'MACD', 'Signal_Line', 'EMA_12', 'EMA_26', 'EMA_50', 
             'EMA_200', '%K', '%D', 'BB_Upper', 'BB_Lower', 'ATR', 'OBV', 'Volume'
         ]
+        self.initialized = False
+        
+        # Auto-load on init if path exists
+        self.load_model()
 
     def load_model(self):
         """Loads the pre-trained XGBoost model from MODEL_PATH."""
         if os.path.exists(MODEL_PATH):
             try:
                 self.model.load_model(MODEL_PATH)
+                self.initialized = True
                 logging.info(f"📂 XGBoost model loaded from {MODEL_PATH}")
                 return True
             except Exception as e:
                 logging.error(f"❌ Failed to load XGBoost model: {e}")
+                self.initialized = False
                 return False
-        return False
+        else:
+            logging.warning(f"⚠️ XGBoost model file not found at {MODEL_PATH}")
+            self.initialized = False
+            return False
 
     def predict(self, df):
         """
         Generates a prediction (Hold, Buy, Sell) and confidence for the latest data point.
         """
+        if not self.initialized:
+            logging.debug("⚠️ XGBoost model not initialized. Defaulting to 'Hold'.")
+            return "Hold", 0.0
+
         try:
             # Ensure technical indicators are present
             df_features = FeaturesPipeline.generate_feature_set(df)
