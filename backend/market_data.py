@@ -36,28 +36,36 @@ class CustomJSONEncoder(json.JSONEncoder):
 def load_cache():
     """Loads market data cache from local disk."""
     global MARKET_DATA_CACHE
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r") as f:
-                MARKET_DATA_CACHE = json.load(f)
-            logging.info(f"📂 Loaded market data cache from {CACHE_FILE}")
-        except Exception as e:
-            logging.error(f"⚠️ Failed to load cache: {e}")
-            MARKET_DATA_CACHE = {}
+    with CACHE_LOCK:
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, "r") as f:
+                    MARKET_DATA_CACHE = json.load(f)
+                logging.info(f"📂 Loaded market data cache from {CACHE_FILE}")
+            except Exception as e:
+                logging.error(f"⚠️ Failed to load cache: {e}")
+                MARKET_DATA_CACHE = {}
 
 def save_cache():
-    """Saves market data cache to local disk."""
+    """Saves market data cache to local disk using an atomic write."""
     try:
         with CACHE_LOCK:
-            # Create a copy to avoid "changed size during iteration" if json.dump
-            # somehow triggers threading issues (though lock should handle it)
+            # Create a copy to ensure thread-safety during serialization
             cache_copy = MARKET_DATA_CACHE.copy()
             
-        with open(CACHE_FILE, "w") as f:
+        tmp_file = f"{CACHE_FILE}.tmp"
+        with open(tmp_file, "w") as f:
             json.dump(cache_copy, f, cls=CustomJSONEncoder)
-        # logging.info("💾 Saved market data cache to disk.")
+        
+        # Atomic overwrite
+        os.replace(tmp_file, CACHE_FILE)
     except Exception as e:
         logging.error(f"⚠️ Failed to save cache: {e}")
+        # Clean up tmp file if it exists and replace failed
+        tmp_file = f"{CACHE_FILE}.tmp"
+        if os.path.exists(tmp_file):
+            try: os.remove(tmp_file)
+            except: pass
 
 # Load cache on module import
 load_cache()
