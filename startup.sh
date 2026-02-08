@@ -2,9 +2,32 @@
 
 # Configuration
 BACKEND_PORT=8848
+FRONTEND_PORT=3848
 FRONTEND_DIR="investment-ui"
 
+# Cleanup function to kill background processes
+cleanup() {
+    echo ""
+    echo "🛑 Shutting down servers..."
+    [ ! -z "$BACKEND_PID" ] && kill $BACKEND_PID 2>/dev/null
+    [ ! -z "$FRONTEND_PID" ] && kill $FRONTEND_PID 2>/dev/null
+    
+    # Surgical port cleanup (optional but helpful)
+    lsof -ti :$BACKEND_PORT | xargs kill -9 2>/dev/null
+    lsof -ti :$FRONTEND_PORT | xargs kill -9 2>/dev/null
+    echo "✅ Done."
+    exit
+}
+
+# Trap Ctrl+C (SIGINT) and terminal close (SIGTERM)
+trap cleanup SIGINT SIGTERM
+
 echo "🚀 Starting Investment Strategy Builder Setup..."
+
+# 0. Pre-start: ensure ports are clear
+echo "🧹 Clearing existing processes on ports $BACKEND_PORT and $FRONTEND_PORT..."
+lsof -ti :$BACKEND_PORT | xargs kill -9 2>/dev/null
+lsof -ti :$FRONTEND_PORT | xargs kill -9 2>/dev/null
 
 # 1. Install Backend Dependencies
 if [ -f "backend/requirements.txt" ]; then
@@ -26,15 +49,18 @@ fi
 
 # 3. Launch Backend
 echo "🐍 Starting Flask Backend on port $BACKEND_PORT..."
-# Using nohup to keep it running or just & for interactive use
 python3 backend/main.py &
 BACKEND_PID=$!
 
 # 4. Launch Frontend
 if [ -d "$FRONTEND_DIR" ]; then
-    echo "⚛️ Starting React Frontend on port 3848..."
+    echo "⚛️ Starting React Frontend on port $FRONTEND_PORT..."
     cd $FRONTEND_DIR
-    PORT=3848 npm start
+    # Run in subshell and capture PID
+    PORT=$FRONTEND_PORT npm start &
+    FRONTEND_PID=$!
+    # Wait for child processes (this keeps the script alive to catch the trap)
+    wait $FRONTEND_PID
 else
     echo "❌ Error: Cannot start frontend. Directory missing."
     kill $BACKEND_PID

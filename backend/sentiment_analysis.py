@@ -29,15 +29,8 @@ def analyze_sentiment_batch(asset_names):
         return {}
 
     if not USE_DEEPSEEK_API:
-        # Mock Logic for multiple assets
-        import random
-        results = {}
-        for asset in asset_names:
-            score = random.uniform(0.1, 0.9)
-            trend = "positive" if score > 0.3 else ("negative" if score < -0.3 else "neutral")
-            results[asset] = {"score": score, "trend": trend}
-        logging.info(f"Sentiment Analysis for {len(asset_names)} assets (MOCKED BATCH)")
-        return results
+        logging.info(f"DeepSeek API disabled. Skipping sentiment analysis for {len(asset_names)} assets (returning neutral).")
+        return {asset: {"score": 0, "trend": "neutral"} for asset in asset_names}
 
     if not DEEPSEEK_API_KEY:
         logging.error("DEEPSEEK_API_KEY not found. Returning neutral for all.")
