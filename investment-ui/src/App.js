@@ -187,7 +187,7 @@ const App = () => {
         timeframe: currentTf
       });
       if (res.data.error) setErrorV(res.data.error);
-      else setVerificationResults(res.data);
+      else setVerificationResults(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error(err);
       setErrorV("Failed to run verification simulation.");
@@ -583,7 +583,7 @@ AAPL,10,Stocks`}
 
           {errorV && <div style={{ color: "var(--accent-red)", marginTop: "16px", padding: "12px", background: "rgba(255, 59, 48, 0.1)", borderRadius: "8px" }}>{errorV}</div>}
 
-          {verificationResults && (
+          {Array.isArray(verificationResults) && verificationResults.length > 0 && (
             <div style={{ marginTop: "24px", overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "14px" }}>
                 <thead>
