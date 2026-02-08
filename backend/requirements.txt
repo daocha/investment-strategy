@@ -5,11 +5,5 @@ pandas>=2.2.0
 scipy
 yfinance
 requests
-matplotlib
-statsmodels
-# tensorflow  # Not yet supported on Python 3.13
-backtrader
-scikit-learn  # Correct name for sklearn
 xgboost
-joblib
 python-dotenv
