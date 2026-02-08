@@ -9,6 +9,8 @@ import numpy as np # Added numpy
 import pandas as pd # Added pandas
 from dotenv import load_dotenv
 
+import threading # Added threading for lock
+
 load_dotenv()
 
 from backend.config import ASSET_LIST, CACHE_FILE, CACHE_TTL, USE_DEEPSEEK_API, BINANCE_API_URL, DEEPSEEK_API_URL, DEFAULT_BACKTEST_PERIOD
@@ -16,6 +18,7 @@ from backend.config import ASSET_LIST, CACHE_FILE, CACHE_TTL, USE_DEEPSEEK_API, 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 MARKET_DATA_CACHE = {}
+CACHE_LOCK = threading.Lock() # Added lock for thread-safety
 
 class CustomJSONEncoder(json.JSONEncoder):
     """Custom JSON Encoder for NumPy and Pandas types."""
@@ -45,8 +48,13 @@ def load_cache():
 def save_cache():
     """Saves market data cache to local disk."""
     try:
+        with CACHE_LOCK:
+            # Create a copy to avoid "changed size during iteration" if json.dump
+            # somehow triggers threading issues (though lock should handle it)
+            cache_copy = MARKET_DATA_CACHE.copy()
+            
         with open(CACHE_FILE, "w") as f:
-            json.dump(MARKET_DATA_CACHE, f, cls=CustomJSONEncoder)
+            json.dump(cache_copy, f, cls=CustomJSONEncoder)
         # logging.info("💾 Saved market data cache to disk.")
     except Exception as e:
         logging.error(f"⚠️ Failed to save cache: {e}")
@@ -106,7 +114,8 @@ def get_trending_assets():
             assets_json = extract_tickers(assets_response)
             
             # SUCCESS: Save AI result to cache
-            MARKET_DATA_CACHE[cache_key] = (assets_json, current_time)
+            with CACHE_LOCK:
+                MARKET_DATA_CACHE[cache_key] = (assets_json, current_time)
             save_cache()
         except Exception as e:
             logging.error(f"❌ DeepSeek API failed: {e}. Using configured ASSET_LIST.")
@@ -166,7 +175,8 @@ def get_fx_rate(from_currency, to_currency="USD"):
         data = ticker.history(period="1d")
         if not data.empty:
             rate = float(data["Close"].iloc[-1])
-            MARKET_DATA_CACHE[cache_key] = (rate, current_time)
+            with CACHE_LOCK:
+                MARKET_DATA_CACHE[cache_key] = (rate, current_time)
             save_cache()
             return rate
     except Exception as e:
@@ -256,7 +266,8 @@ def fetch_yfinance_data(ticker, current_time=None):
                 "52-Week Low": info.get("fiftyTwoWeekLow", "N/A"),
                 "Currency": currency
             }
-            MARKET_DATA_CACHE[cache_key] = (data, current_time)
+            with CACHE_LOCK:
+                MARKET_DATA_CACHE[cache_key] = (data, current_time)
             save_cache()
             return data
     except Exception as e:
@@ -301,7 +312,8 @@ def fetch_crypto_data(ticker, current_time=None):
                 "24h Change": float(response["priceChangePercent"]),
                 "Market Cap": "N/A"
             }
-            MARKET_DATA_CACHE[cache_key] = (data, current_time)
+            with CACHE_LOCK:
+                MARKET_DATA_CACHE[cache_key] = (data, current_time)
             save_cache()
             return data
     except Exception as e:
@@ -392,7 +404,8 @@ def fetch_historical_data(ticker, category, period=None):
         
         if df is not None and not df.empty:
             # Convert to split format to avoid Timestamp-as-key JSON errors
-            MARKET_DATA_CACHE[cache_key] = (df.to_dict(orient='split'), current_time)
+            with CACHE_LOCK:
+                MARKET_DATA_CACHE[cache_key] = (df.to_dict(orient='split'), current_time)
             save_cache()
             return df
     except Exception as e:
