@@ -2,20 +2,44 @@ import pandas as pd
 import numpy as np
 import xgboost as xgb
 import os
-import logging
+import sys
+import logging # Added import logging
+# Configure logging - MUST be before backend imports to take precedence
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", force=True)
+
+# Add project root to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+print("🚀 Script received start command. Initializing...")
+
 from backend.features import FeaturesPipeline
 from backend.market_data import fetch_historical_data
-from backend.config import MODEL_PATH
+from backend.config import MODEL_PATH, ASSET_LIST
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+def get_all_assets():
+    """Flatten ASSET_LIST from config to get all trainable assets."""
+    assets = {"Stocks": [], "ETFs": [], "Crypto": []}
+    
+    # Stocks
+    for group, tickers in ASSET_LIST.get("Stocks", {}).items():
+        assets["Stocks"].extend(tickers)
+        
+    # ETFs
+    for group, tickers in ASSET_LIST.get("ETFs", {}).items():
+        assets["ETFs"].extend(tickers)
+        
+    # Crypto
+    for group, tickers in ASSET_LIST.get("Crypto", {}).items():
+        assets["Crypto"].extend(tickers)
+        
+    # Indices (Treat as ETFs/Market proxies for training context if needed, but for now stick to tradeable assets)
+    # Market data fetching might differ for indices, so excluding for this specific classifier model 
+    # which is intended for asset prediction.
+    
+    return assets
 
-# Representative assets for training
-TRAINING_ASSETS = {
-    "Stocks": ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "BRK-B", "JPM", "V"],
-    "ETFs": ["SPY", "QQQ", "VTI", "VOO", "IWM"],
-    "Crypto": ["BTC", "ETH", "SOL", "BNB"]
-}
+# Dynamically load assets
+TRAINING_ASSETS = get_all_assets()
 
 def create_labels(df, window=7, threshold=0.03):
     """
