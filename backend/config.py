@@ -23,7 +23,7 @@ MIN_RETURN_THRESHOLD = -10.0  # Mock threshold to ensure all holdings are analyz
 # Risk-Based Rules
 RISK_SETTINGS = {
     "low": {"allowed_assets": ["Stocks", "ETFs"], "max_volatility": 0.25},
-    "medium": {"allowed_assets": ["Stocks", "ETFs", "Crypto"], "max_volatility": 0.45},
+    "medium": {"allowed_assets": ["Stocks", "ETFs", "Crypto"], "max_volatility": 0.60}, # Increased from 0.45
     "high": {"allowed_assets": ["Stocks", "ETFs", "Crypto"], "max_volatility": None},
 }
 

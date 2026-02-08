@@ -171,8 +171,10 @@ class VerificationService:
                             pred_annual = -volatility * conf
                         else:
                             pred_annual = 0.05 * conf
-                        
-                        pred_period = (1 + pred_annual) ** timeframe_factor - 1
+                        # Ensure the base is positive for the power operation to avoid NaN/RuntimeWarning
+                        # (1 + pred_annual) could be <= 0 if volatility * confidence is >= 1
+                        safe_base = max(0.01, 1 + pred_annual)
+                        pred_period = (safe_base) ** timeframe_factor - 1
                         prediction_possible = True
 
                     # B. Actual Performance (What *actually* happened)

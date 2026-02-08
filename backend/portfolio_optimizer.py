@@ -180,6 +180,7 @@ def process_single_asset(asset, category, timeframe, market_data_entry, min_annu
         sentiment_trend = sentiment["trend"]
 
         if not ignore_filters and sentiment_trend == "negative":
+            logging.info(f"⏭️ Skipping {asset}: Negative sentiment")
             return None
 
         # 2. Technical Indicators (Pass pre-fetched data)
@@ -189,7 +190,10 @@ def process_single_asset(asset, category, timeframe, market_data_entry, min_annu
 
         # Filter by RSI/MACD if sentiment is just neutral
         if not ignore_filters and sentiment_trend == "neutral":
-            if indicators.get("RSI", 0) <= RSI_THRESHOLD or indicators.get("MACD", 0) <= MACD_THRESHOLD:
+            rsi = indicators.get("RSI", 0)
+            macd = indicators.get("MACD", 0)
+            if rsi <= RSI_THRESHOLD or macd <= MACD_THRESHOLD:
+                logging.info(f"⏭️ Skipping {asset}: Neutral sentiment + Weak indicators (RSI:{rsi:.1f}, MACD:{macd:.1f})")
                 return None
 
         # 3. Backtesting (Pass pre-fetched data)
@@ -197,6 +201,7 @@ def process_single_asset(asset, category, timeframe, market_data_entry, min_annu
         
         # Robust check for backtest result
         if backtest_annual_return is None:
+            logging.info(f"⏭️ Skipping {asset}: Backtest failed")
             return None
 
         if backtest_annual_return is None:
@@ -240,6 +245,7 @@ def process_single_asset(asset, category, timeframe, market_data_entry, min_annu
             combined_return = (backtest_return_for_period * 0.4) + (predicted_return * 0.6)
 
         if not ignore_filters and combined_return < min_annual_return:
+            logging.info(f"⏭️ Skipping {asset}: Return {combined_return*100:.2f}% < Threshold {min_annual_return*100:.2f}%")
             return None
 
         current_price = market_data_entry["Close"]
@@ -323,11 +329,34 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
             if result:
                 asset_performance.append(result)
 
-    logging.info(f"Total assets processed: {len(asset_performance)}")
+    logging.info(f"Total assets processed (Initial Pass): {len(asset_performance)}")
+
+    # **Rescue Pass**: If too few assets survived, retry with relaxed criteria
+    if len(asset_performance) < 5:
+        logging.info(f"⚠️ Only {len(asset_performance)} assets survived filters. Triggering Rescue Pass (ignoring soft filters)...")
+        rescue_performance = []
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            # Rerun with ignore_filters=True
+            rescue_futures = {
+                executor.submit(process_single_asset, asset, category, timeframe, data, MINIMUM_ANNUAL_RETURN, ignore_filters=True): asset 
+                for asset, category, data in assets_to_process
+            }
+            for future in as_completed(rescue_futures):
+                result = future.result()
+                if result:
+                    rescue_performance.append(result)
+        
+        # Merge results, prioritizing original performance
+        existing_assets = {p["asset"] for p in asset_performance}
+        for p in rescue_performance:
+            if p["asset"] not in existing_assets:
+                asset_performance.append(p)
+        
+        logging.info(f"Total assets processed after Rescue Pass: {len(asset_performance)}")
 
     if not asset_performance:
-        logging.warning("No assets survived performance/XGBoost filtering.")
-        return {"error": "No assets match performance criteria"}
+        logging.warning("❌ No assets survived even after Rescue Pass.")
+        return {"error": "Technical failure: No market data available for the selected assets."}
 
     # Apply Risk-Based Filtering
     allowed_assets = RISK_SETTINGS[risk_level]["allowed_assets"]
@@ -372,7 +401,8 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
     logging.info(f"Top selected assets (diversified): {[a['asset'] for a in asset_performance]}")
 
     if not asset_performance:
-         return {"error": "No assets match risk criteria"}
+         logging.warning(f"❌ No assets match risk criteria for level: {risk_level}")
+         return {"error": f"No assets match the current risk profile ({risk_level}). Try a higher risk level or different timeframe."}
 
     # **Portfolio Optimization**
     num_assets = len(asset_performance)

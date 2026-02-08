@@ -53,15 +53,15 @@ def save_cache():
             # Create a copy to ensure thread-safety during serialization
             cache_copy = MARKET_DATA_CACHE.copy()
             
-        tmp_file = f"{CACHE_FILE}.tmp"
-        with open(tmp_file, "w") as f:
-            json.dump(cache_copy, f, cls=CustomJSONEncoder)
-        
-        # Atomic overwrite
-        os.replace(tmp_file, CACHE_FILE)
+            tmp_file = f"{CACHE_FILE}.tmp"
+            with open(tmp_file, "w") as f:
+                json.dump(cache_copy, f, cls=CustomJSONEncoder)
+            
+            # Atomic overwrite (Now inside the lock to prevent concurrent tmp file access)
+            os.replace(tmp_file, CACHE_FILE)
     except Exception as e:
         logging.error(f"⚠️ Failed to save cache: {e}")
-        # Clean up tmp file if it exists and replace failed
+        # Clean up tmp file if it exists and replace failed (careful with lock here)
         tmp_file = f"{CACHE_FILE}.tmp"
         if os.path.exists(tmp_file):
             try: os.remove(tmp_file)
