@@ -37,6 +37,15 @@ else
     echo "⚠️ Warning: backend/requirements.txt not found."
 fi
 
+# 1.5. Ensure XGBoost Model exists
+MODEL_JSON="backend/xgboost_model.json"
+if [ ! -f "$MODEL_JSON" ]; then
+    echo "🧠 XGBoost model not found. Generating initial 'brain'..."
+    python3 backend/train_model.py
+else
+    echo "✅ XGBoost model found. Skipping training."
+fi
+
 # 2. Install Frontend Dependencies
 if [ -d "$FRONTEND_DIR" ]; then
     echo "📦 Installing Node.js dependencies..."
