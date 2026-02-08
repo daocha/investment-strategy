@@ -3,10 +3,8 @@ import requests
 import pandas as pd
 import numpy as np
 import logging
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-BINANCE_API_URL = "https://api.binance.com/api/v3/klines"  # Binance API endpoint for historical data
+from backend.config import BINANCE_API_URL
+from backend.features.technical import calculate_technical_features
 
 def fetch_stock_etf_data(symbol, period="6mo"):
     """
@@ -20,6 +18,8 @@ def fetch_stock_etf_data(symbol, period="6mo"):
             logging.warning(f"⚠️ No historical data found for {symbol}. It may be delisted.")
             return None
 
+        # Force UTC then strip TZ to handle any mixed TZs reliably
+        df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
         df = df[["Open", "High", "Low", "Close", "Volume"]]
         df.dropna(inplace=True)
         return df
@@ -30,19 +30,39 @@ def fetch_stock_etf_data(symbol, period="6mo"):
 def fetch_crypto_data(symbol, interval="1d", limit=180):
     """
     Fetches historical data for cryptocurrencies from Binance.
-    Example symbol format: BTCUSDT, ETHUSDT
+    Supports larger limits (>1000) by paginating calls.
     """
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    try:
-        response = requests.get(BINANCE_API_URL, params=params)
-        data = response.json()
+    all_data = []
+    current_limit = limit
+    end_time = None
 
-        if "code" in data:  # Binance returns an error code if request fails
-            logging.warning(f"⚠️ Binance API Error for {symbol}: {data}")
+    try:
+        while current_limit > 0:
+            fetch_count = min(current_limit, 1000)
+            params = {"symbol": symbol, "interval": interval, "limit": fetch_count}
+            if end_time:
+                params["endTime"] = end_time - 1
+            
+            response = requests.get(BINANCE_API_URL, params=params)
+            data = response.json()
+
+            if not data or "code" in data or len(data) == 0:
+                break
+            
+            # Binance returns rows ordered by time (oldest first in the result list)
+            # To paginate BACKWARDS, we prepend new data to our list and use the first timestamp as our new endTime
+            all_data = data + all_data
+            end_time = data[0][0] # The timestamp of the oldest record in this batch
+            
+            current_limit -= len(data)
+            if len(data) < fetch_count:
+                break # No more data available
+        
+        if not all_data:
             return None
 
         # Binance returns: [timestamp, open, high, low, close, volume, ...]
-        df = pd.DataFrame(data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume",
+        df = pd.DataFrame(all_data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume",
                                          "CloseTime", "QuoteAssetVolume", "Trades", "TakerBuyBase", "TakerBuyQuote", "Ignore"])
 
         df["Open"] = df["Open"].astype(float)
@@ -51,23 +71,32 @@ def fetch_crypto_data(symbol, interval="1d", limit=180):
         df["Close"] = df["Close"].astype(float)
         df["Volume"] = df["Volume"].astype(float)
 
+        df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit='ms')
+        df.set_index("Timestamp", inplace=True)
+
+        # Remove duplicates if any (due to overlapping boundaries)
+        df = df[~df.index.duplicated(keep='first')]
         df = df[["Open", "High", "Low", "Close", "Volume"]]
         return df
     except Exception as e:
         logging.error(f"❌ Error fetching data for {symbol} from Binance: {e}")
         return None
 
-def calculate_indicators(asset, category):
+def calculate_indicators(asset, category, data=None):
     """
     Calculates technical indicators (SMA, RSI, MACD) for the given asset.
     - Stocks & ETFs: Data from Yahoo Finance
-    - Cryptocurrencies: Data from Binance
+    - Crypto: Data from Binance
+    - Can optionally accept a pre-fetched DataFrame (`data`) to avoid API calls.
     """
-    logging.info(f"📊 Fetching data for {asset} ({category})...")
+    logging.info(f"📊 Calculating indicators for {asset} ({category})...")
 
-    if category in ["Stocks", "ETFs"]:
+    df = None
+    if data is not None and not data.empty:
+        df = data
+    elif category in ["Stocks", "ETFs"]:
         df = fetch_stock_etf_data(asset)
-    elif category == "Cryptocurrencies":
+    elif category == "Crypto":
         df = fetch_crypto_data(asset + "USDT")  # Binance uses USDT pairs
     else:
         logging.warning(f"⚠️ Unknown category {category} for {asset}. Skipping technical analysis.")
@@ -77,20 +106,9 @@ def calculate_indicators(asset, category):
         logging.warning(f"⚠️ No data available for {asset}. Skipping technical analysis.")
         return None
 
-    # Calculate SMA (Simple Moving Average)
-    df["SMA_50"] = df["Close"].rolling(window=50).mean()
-
-    # Calculate RSI (Relative Strength Index)
-    delta = df["Close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df["RSI"] = 100 - (100 / (1 + rs))
-
-    # Calculate MACD (Moving Average Convergence Divergence)
-    short_ema = df["Close"].ewm(span=12, adjust=False).mean()
-    long_ema = df["Close"].ewm(span=26, adjust=False).mean()
-    df["MACD"] = short_ema - long_ema
+    # Use the consolidated features module to calculate indicators
+    from backend.features import FeaturesPipeline
+    df = FeaturesPipeline.generate_feature_set(df)
 
     latest_data = df[["SMA_50", "RSI", "MACD"]].iloc[-1].to_dict()
 
@@ -102,10 +120,9 @@ if __name__ == "__main__":
     assets = [
         ("NVDA", "Stocks"),  # Yahoo Finance
         ("QQQ", "ETFs"),  # Yahoo Finance
-        ("BTC", "Cryptocurrencies"),  # Binance
-        ("ETH", "Cryptocurrencies")  # Binance
+        ("BTC", "Crypto"),  # Binance
+        ("ETH", "Crypto")  # Binance
     ]
 
     for asset, category in assets:
         indicators = calculate_indicators(asset, category)
-        print(f"{asset} ({category}): {indicators}")
