@@ -9,8 +9,9 @@ MODEL_PATH = os.path.join(BASE_DIR, "xgboost_model.json")
 # Market Data & Time Settings
 CACHE_TTL = 86400  # 1 day
 USE_DEEPSEEK_API = False
-BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_SNAPSHOT_URL = "https://api.binance.com/api/v3/ticker/24hr"
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DAYS_IN_YEAR = 365.25
 DEFAULT_BACKTEST_PERIOD = "10y"
 

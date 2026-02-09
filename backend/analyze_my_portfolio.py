@@ -3,13 +3,14 @@ import sys
 import pandas as pd
 import logging
 from io import StringIO
+import json
 
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from backend.config import PORTFOLIO_FILE, MIN_RETURN_THRESHOLD, CURRENCY_SYMBOLS, DAYS_IN_YEAR, DEFAULT_BACKTEST_PERIOD, CRYPTO_ETF_MAPPING
 from backend.portfolio_optimizer import process_single_asset, convert_floats
-from backend.market_data import fetch_yfinance_data, fetch_crypto_data, CustomJSONEncoder, get_fx_rate, fetch_historical_data, get_historical_fx_rate
+from backend.market_data import fetch_stock_etf_snapshot, fetch_crypto_snapshot, CustomJSONEncoder, get_fx_rate, fetch_historical_data, get_historical_fx_rate
 from backend.sentiment_analysis import analyze_sentiment_batch
 
 def run_portfolio_analysis(df_holdings, base_currency="HKD", timeframe=6):
@@ -45,9 +46,9 @@ def run_portfolio_analysis(df_holdings, base_currency="HKD", timeframe=6):
             # 1. Fetch Current Data
             data = None
             if category in ["Stocks", "ETFs"]:
-                data = fetch_yfinance_data(asset)
+                data = fetch_stock_etf_snapshot(asset)
             elif category == "Crypto":
-                data = fetch_crypto_data(asset)
+                data = fetch_crypto_snapshot(asset)
             
             if not data:
                 logging.warning(f"⚠️ No current data for {asset}. Skipping.")
@@ -154,7 +155,7 @@ def run_portfolio_analysis(df_holdings, base_currency="HKD", timeframe=6):
     # 5. Process Benchmark (S&P 500)
     benchmark_results = None
     try:
-        gspc_data = fetch_yfinance_data("^GSPC")
+        gspc_data = fetch_stock_etf_snapshot("^GSPC")
         if gspc_data:
             benchmark_asset = process_single_asset("^GSPC", "Stocks", timeframe, gspc_data, MIN_RETURN_THRESHOLD, ignore_filters=True)
             if benchmark_asset:
@@ -192,7 +193,6 @@ def analyze_portfolio():
     result = run_portfolio_analysis(df_holdings)
     
     output_file = os.path.join(os.path.dirname(__file__), "my_portfolio_analysis.json")
-    import json
     with open(output_file, "w") as f:
         json.dump(result, f, indent=4, cls=CustomJSONEncoder)
     

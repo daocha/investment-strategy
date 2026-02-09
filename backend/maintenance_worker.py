@@ -10,26 +10,63 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # Ensure project root is in path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from backend.market_data import fetch_historical_data
+from backend.market_data import (
+    fetch_market_data, fetch_stock_etf_snapshot, fetch_crypto_snapshot, 
+    fetch_historical_data, MARKET_DATA_CACHE, CACHE_LOCK, save_cache
+)
 from backend.train_model import train_model, TRAINING_ASSETS
 from backend.config import MODEL_PATH
+from backend.sentiment_analysis import analyze_sentiment_batch
+from backend.portfolio_optimizer import process_single_asset
 
 # Define HKT (UTC+8) timezone
 HKT = timezone(timedelta(hours=8))
 
 def refresh_all_market_data():
-    """Iterates through all assets to refresh the 10Y cache."""
+    """Iterates through all assets to refresh the 10Y cache and pre-populate all indicator/prediction caches."""
     logging.info("🔋 Starting scheduled market data refresh (all assets)...")
     count = 0
+    all_tickers = []
     for category, tickers in TRAINING_ASSETS.items():
         for ticker in tickers:
             try:
-                # This automatically updates the 10y cache in market_data.py
-                fetch_historical_data(ticker, category, period="10y")
+                # 1. Refresh 10Y Historical Data Cache
+                hist_data = fetch_historical_data(ticker, category, period="10y")
+                
+                # 2. Pre-warm Snapshot Cache
+                if category in ["Stocks", "ETFs"]:
+                    fetch_stock_etf_snapshot(ticker)
+                elif category == "Crypto":
+                    fetch_crypto_snapshot(ticker)
+
                 count += 1
+                all_tickers.append((ticker, category, hist_data))
             except Exception as e:
-                logging.error(f"Error refreshing {ticker}: {e}")
-    logging.info(f"✅ Refresh complete. Updated {count} assets.")
+                logging.error(f"Error refreshing data for {ticker}: {e}")
+
+    logging.info(f"✅ Historical data refresh complete ({count} assets). Starting Indicator & Prediction pre-calculation...")
+
+    # 2. Batch Sentiment Calculation (DeepSeek)
+    try:
+        flat_tickers = [t[0] for t in all_tickers]
+        analyze_sentiment_batch(flat_tickers)
+        logging.info("✅ Batch sentiment pre-calculated.")
+    except Exception as e:
+        logging.error(f"Error pre-calculating sentiment: {e}")
+
+    # 3. Indicators & Predictions (Triggers all other caches)
+    for ticker, category, hist_data in all_tickers:
+        try:
+            # We call process_single_asset with ignore_filters=True to ensure it calculates for all
+            # and timeframe=12 (1 year) as a standard baseline for caching.
+            # market_data_entry needs 'Close' for price calculation
+            market_data_entry = {"Close": hist_data["Close"].iloc[-1], "Name": ticker}
+            process_single_asset(ticker, category, 12, market_data_entry, -10.0, ignore_filters=True)
+        except Exception as e:
+            logging.error(f"Error pre-calculating indicators/predictions for {ticker}: {e}")
+
+    save_cache(force=True)
+    logging.info(f"✅ Full maintenance refresh complete.")
 
 def run_maintenance_cycle(is_training_day=False):
     """Refreshes data and optionally retrains the model."""
