@@ -29,7 +29,7 @@ def generate_investment_strategy():
     risk_level = data.get("risk_level")
     timeframe = data.get("timeframe")
     initial_amount = data.get("initial_amount")
-    base_currency = data.get("currency", "HKD")
+    base_currency = data.get("currency") or data.get("base_currency") or "HKD"
     return generate_strategy(
         risk_level,
         timeframe,

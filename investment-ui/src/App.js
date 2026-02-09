@@ -99,7 +99,7 @@ const App = () => {
         risk_level: riskLevel,
         timeframe: parseInt(timeframe, 10),
         initial_amount: parseFloat(initialAmount),
-        base_currency: selectedCurrency,
+        currency: selectedCurrency,
       });
 
       // Sort by allocation percentage descending
