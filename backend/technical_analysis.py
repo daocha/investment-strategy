@@ -25,9 +25,8 @@ def calculate_indicators(asset, category, data=None):
     cache_key = f"indicators_{asset}"
     
     # 1. Check Cache
-    if data is None: # Only use cache if we are not passing custom/forced data
-        with CACHE_LOCK:
-            if cache_key in MARKET_DATA_CACHE:
+    with CACHE_LOCK:
+        if cache_key in MARKET_DATA_CACHE:
                 cached_data, timestamp = MARKET_DATA_CACHE[cache_key]
                 if current_time - timestamp < CACHE_TTL:
                     logging.info(f"💾 Using cached indicators for {asset}")

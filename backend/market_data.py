@@ -71,7 +71,10 @@ def save_cache(force=False):
             # Atomic overwrite
             os.replace(tmp_file, CACHE_FILE)
             LAST_SAVE_TIME = current_time
-            logging.info(f"💾 Cache saved to disk ({len(cache_copy)} keys)")
+            if force:
+                logging.info(f"💾 Cache saved to disk (FORCE, {len(cache_copy)} keys)")
+            else:
+                logging.debug(f"💾 Cache saved to disk ({len(cache_copy)} keys)")
     except Exception as e:
         logging.error(f"⚠️ Failed to save cache: {e}")
         # Clean up tmp file
@@ -572,13 +575,26 @@ def fetch_historical_returns(tickers_with_categories, period="1y"):
     Fetches historical returns for a list of tickers.
     Uses fetch_historical_data for centralized caching.
     """
-    returns_df = pd.DataFrame()
+    series_dict = {}
     
     for ticker, category in tickers_with_categories:
         df = fetch_historical_data(ticker, category, period=period)
         if df is not None and not df.empty:
             # Force UTC then strip TZ to handle any mixed TZs reliably
             df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
-            returns_df[ticker] = df["Close"].pct_change()
+            # Calculate returns and store in dict
+            series_dict[ticker] = df["Close"].pct_change()
+    
+    if not series_dict:
+        return pd.DataFrame()
+
+    # Align all series into a single DataFrame
+    # Using join='outer' to preserve all trading days, then filling gaps with 0.0
+    # (exchange closed = 0% return)
+    returns_df = pd.concat(series_dict, axis=1).fillna(0.0)
+    
+    # Drop the first row as it's always NaN for all assets due to pct_change()
+    if not returns_df.empty:
+        returns_df = returns_df.iloc[1:]
             
-    return returns_df.dropna()
+    return returns_df

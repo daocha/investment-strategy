@@ -443,9 +443,15 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
     weights = weights / weights.sum() # Initialize with Confidence-Based weights as default
 
     if not returns_df.empty:
+        # Detect missing assets for logging
+        received_tickers = set(returns_df.columns)
+        requested_tickers = {t for t, c in tickers_with_categories}
+        missing_tickers = requested_tickers - received_tickers
+        if missing_tickers:
+            logging.warning(f"⚠️ Missing historical data for: {list(missing_tickers)}. These will be excluded from MVO.")
+
         try:
-            # Match returns_df columns with our selected assets
-            available_tickers = returns_df.columns.tolist()
+            available_tickers = list(received_tickers)
             if len(available_tickers) >= 2: # Need at least 2 for cov/optimization
                 sub_indices = [i for i, a in enumerate(asset_performance) if a["asset"] in available_tickers]
                 sub_returns = returns_df[available_tickers]
@@ -491,7 +497,8 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
         except Exception as e:
             logging.error(f"❌ Optimization error: {e}. Falling back to Confidence Weighting.")
     else:
-        logging.warning("⚠️ No historical returns found. Using Confidence Weighting fallback.")
+        all_requested = [t for t, c in tickers_with_categories]
+        logging.warning(f"⚠️ No historical returns found for any requested assets: {all_requested}. Using Confidence Weighting fallback.")
 
     portfolio_allocation = []
     for i, entry in enumerate(asset_performance):
