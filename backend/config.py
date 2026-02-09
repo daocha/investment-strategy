@@ -12,7 +12,7 @@ USE_DEEPSEEK_API = False
 BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 DAYS_IN_YEAR = 365.25
-DEFAULT_BACKTEST_PERIOD = "5y"
+DEFAULT_BACKTEST_PERIOD = "10y"
 
 # Portfolio Analysis Thresholds
 RSI_THRESHOLD = 50

@@ -55,11 +55,11 @@ def create_labels(df, window=7, threshold=0.03):
     # Drop rows where we don't have future data
     return labels.iloc[:-window]
 
-def train_model():
+def train_model(output_path=MODEL_PATH):
     all_features = []
     all_labels = []
 
-    logging.info("🚀 Starting Model Training with 10Y historical data...")
+    logging.info(f"🚀 Starting Model Training with 10Y historical data... (Target: {output_path})")
 
     for category, tickers in TRAINING_ASSETS.items():
         for ticker in tickers:
@@ -124,9 +124,17 @@ def train_model():
     # Fit model
     model.fit(X, y)
 
-    # Save model
-    model.save_model(MODEL_PATH)
-    logging.info(f"✅ Model successfully trained and saved to {MODEL_PATH}")
+    # Atomic Save Logic
+    if output_path == MODEL_PATH:
+        # Use a temporary file for atomic overwrite
+        temp_path = f"{output_path}.tmp"
+        model.save_model(temp_path)
+        os.replace(temp_path, output_path)
+        logging.info(f"✅ Model successfully trained and saved atomically to {output_path}")
+    else:
+        # Direct save to the requested location
+        model.save_model(output_path)
+        logging.info(f"✅ Model successfully trained and saved to {output_path}")
 
 if __name__ == "__main__":
     train_model()
