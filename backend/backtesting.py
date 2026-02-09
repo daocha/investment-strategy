@@ -1,13 +1,30 @@
 import pandas as pd
 import numpy as np
 import logging
+import time
+from backend.config import CACHE_TTL
+from backend.market_data import MARKET_DATA_CACHE, CACHE_LOCK, save_cache
 
 def run_backtest(asset, category=None, period=None, data=None):
     """
     Performs a simplified backtest for an asset.
     If 'data' is provided (DataFrame), it uses it to avoid API calls.
+    Functions:
     Returns the annualized return from the first to the last data point.
+    Uses caching to avoid redundant calculations.
     """
+    current_time = time.time()
+    cache_key = f"backtest_{asset}"
+    
+    # 1. Check Cache
+    if data is None: # Only use cache if we are not passing/forcing data
+        with CACHE_LOCK:
+            if cache_key in MARKET_DATA_CACHE:
+                cached_data, timestamp = MARKET_DATA_CACHE[cache_key]
+                if current_time - timestamp < CACHE_TTL:
+                    logging.info(f"💾 Using cached backtest for {asset}")
+                    return cached_data
+
     try:
         if data is None or data.empty:
             logging.warning(f"⚠️ No data provided for {asset} backtest.")
@@ -31,6 +48,11 @@ def run_backtest(asset, category=None, period=None, data=None):
         # Annualize the return: (1 + total_return) ^ (365 / days) - 1
         annualized_return = (1 + total_return) ** (365.0 / max(days, 1)) - 1
         
+        # 2. Save to Cache
+        with CACHE_LOCK:
+            MARKET_DATA_CACHE[cache_key] = (annualized_return, current_time)
+        save_cache()
+
         return annualized_return
 
     except Exception as e:

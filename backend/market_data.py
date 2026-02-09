@@ -13,12 +13,17 @@ import threading # Added threading for lock
 
 load_dotenv()
 
-from backend.config import ASSET_LIST, CACHE_FILE, CACHE_TTL, USE_DEEPSEEK_API, BINANCE_API_URL, DEEPSEEK_API_URL, DEFAULT_BACKTEST_PERIOD
+from backend.config import (
+    ASSET_LIST, CACHE_FILE, CACHE_TTL, USE_DEEPSEEK_API, 
+    BINANCE_KLINES_URL, BINANCE_SNAPSHOT_URL, DEEPSEEK_API_URL, DEFAULT_BACKTEST_PERIOD
+)
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 MARKET_DATA_CACHE = {}
 CACHE_LOCK = threading.Lock() # Added lock for thread-safety
+LAST_SAVE_TIME = 0
+SAVE_INTERVAL = 30 # Only save to disk every 30 seconds to avoid bottleneck
 
 class CustomJSONEncoder(json.JSONEncoder):
     """Custom JSON Encoder for NumPy and Pandas types."""
@@ -46,8 +51,14 @@ def load_cache():
                 logging.error(f"⚠️ Failed to load cache: {e}")
                 MARKET_DATA_CACHE = {}
 
-def save_cache():
-    """Saves market data cache to local disk using an atomic write."""
+def save_cache(force=False):
+    """Saves market data cache to local disk using an atomic write with throttling."""
+    global LAST_SAVE_TIME
+    current_time = time.time()
+    
+    if not force and (current_time - LAST_SAVE_TIME < SAVE_INTERVAL):
+        return
+
     try:
         with CACHE_LOCK:
             # Create a copy to ensure thread-safety during serialization
@@ -57,11 +68,13 @@ def save_cache():
             with open(tmp_file, "w") as f:
                 json.dump(cache_copy, f, cls=CustomJSONEncoder)
             
-            # Atomic overwrite (Now inside the lock to prevent concurrent tmp file access)
+            # Atomic overwrite
             os.replace(tmp_file, CACHE_FILE)
+            LAST_SAVE_TIME = current_time
+            logging.info(f"💾 Cache saved to disk ({len(cache_copy)} keys)")
     except Exception as e:
         logging.error(f"⚠️ Failed to save cache: {e}")
-        # Clean up tmp file if it exists and replace failed (careful with lock here)
+        # Clean up tmp file
         tmp_file = f"{CACHE_FILE}.tmp"
         if os.path.exists(tmp_file):
             try: os.remove(tmp_file)
@@ -98,7 +111,6 @@ def get_trending_assets():
             logging.info("Using cached trending assets list.")
             return data
 
-    url = "https://api.deepseek.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}
 
     data = {
@@ -116,7 +128,7 @@ def get_trending_assets():
     if USE_DEEPSEEK_API:
         try:
             logging.info("Calling DeepSeek API for trending assets...")
-            response = requests.post(url, json=data, headers=headers)
+            response = requests.post(DEEPSEEK_API_URL, json=data, headers=headers)
             response.raise_for_status()
             assets_response = response.json()["choices"][0]["message"]["content"]
             assets_json = extract_tickers(assets_response)
@@ -236,7 +248,117 @@ def get_historical_fx_rate(from_currency, to_currency="USD", date=None):
     
     return 1.0
 
-def fetch_yfinance_data(ticker, current_time=None):
+def fetch_stock_etf_timeseries(symbol, period="6mo"):
+    """
+    Fetches historical OHLCV (Open, High, Low, Close, Volume) data for stocks and ETFs.
+
+    Source: Yahoo Finance (^GSPC, NVDA, AAPL, etc.)
+    
+    Args:
+        symbol (str): The ticker symbol to fetch (e.g., 'AAPL').
+        period (str): The time range to fetch (e.g., '1d', '6mo', '1y').
+
+    Returns:
+        pd.DataFrame: A cleaned DataFrame with DatetimeIndex and OHLCV columns, 
+                     or None if an error occurs or no data is found.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period, interval="1d")
+
+        if df.empty:
+            logging.warning(f"⚠️ No historical data found for {symbol}. It may be delisted.")
+            return None
+
+        # Force UTC then strip TZ to handle any mixed TZs reliably
+        df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
+        df = df[["Open", "High", "Low", "Close", "Volume"]]
+        df.dropna(inplace=True)
+        return df
+    except Exception as e:
+        logging.error(f"❌ Error fetching data for {symbol} from Yahoo Finance: {e}")
+        return None
+
+def fetch_crypto_timeseries(symbol, interval="1d", limit=180):
+    """
+    Fetches historical OHLCV (candlestick) data for cryptocurrencies from Binance.
+    Supports larger limits (>1000) by automatically paginating requests.
+
+    Source: Binance API (/api/v3/klines)
+    
+    Args:
+        symbol (str): The Binance symbol pair (e.g., 'BTCUSDT').
+        interval (str): K-line interval (default '1d').
+        limit (int): Total number of candlesticks to fetch.
+
+    Returns:
+        pd.DataFrame: A DataFrame with DatetimeIndex and OHLCV columns,
+                     or None if an error occurs.
+    """
+    all_data = []
+    current_limit = limit
+    end_time = None
+
+    try:
+        while current_limit > 0:
+            fetch_count = min(current_limit, 1000)
+            params = {"symbol": symbol, "interval": interval, "limit": fetch_count}
+            if end_time:
+                params["endTime"] = end_time - 1
+            
+            response = requests.get(BINANCE_KLINES_URL, params=params)
+            data = response.json()
+
+            if not data or "code" in data or len(data) == 0:
+                break
+            
+            # Binance returns rows ordered by time (oldest first in the result list)
+            # To paginate BACKWARDS, we prepend new data to our list and use the first timestamp as our new endTime
+            all_data = data + all_data
+            end_time = data[0][0] # The timestamp of the oldest record in this batch
+            
+            current_limit -= len(data)
+            if len(data) < fetch_count:
+                break # No more data available
+        
+        if not all_data:
+            return None
+
+        # Binance returns: [timestamp, open, high, low, close, volume, ...]
+        df = pd.DataFrame(all_data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume",
+                                         "CloseTime", "QuoteAssetVolume", "Trades", "TakerBuyBase", "TakerBuyQuote", "Ignore"])
+
+        df["Open"] = df["Open"].astype(float)
+        df["High"] = df["High"].astype(float)
+        df["Low"] = df["Low"].astype(float)
+        df["Close"] = df["Close"].astype(float)
+        df["Volume"] = df["Volume"].astype(float)
+
+        df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit='ms')
+        df.set_index("Timestamp", inplace=True)
+
+        # Remove duplicates if any (due to overlapping boundaries)
+        df = df[~df.index.duplicated(keep='first')]
+        df = df[["Open", "High", "Low", "Close", "Volume"]]
+        return df
+    except Exception as e:
+        logging.error(f"❌ Error fetching data for {symbol} from Binance: {e}")
+        return None
+
+def fetch_stock_etf_snapshot(ticker, current_time=None):
+    """
+    Fetches the current real-time snapshot for a stock or ETF, including metadata.
+
+    Source: Yahoo Finance (Ticker.fast_info and Ticker.info)
+    
+    Args:
+        ticker (str): The ticker symbol (e.g., 'AAPL').
+        current_time (float, optional): Reference Unix timestamp for caching.
+
+    Returns:
+        dict: A dictionary containing 'Name', 'Close', 'Volume', 'Market Cap', 
+              'Currency', etc., or None if fetch fails.
+    """
     if current_time is None:
         current_time = time.time()
     cache_key = f"yfinance_{ticker}"
@@ -279,10 +401,23 @@ def fetch_yfinance_data(ticker, current_time=None):
             save_cache()
             return data
     except Exception as e:
-        logging.error(f"Error fetching {ticker}: {e}")
+        logging.error(f"Error fetching snapshot for {ticker}: {e}")
     return None
 
-def fetch_crypto_data(ticker, current_time=None):
+def fetch_crypto_snapshot(ticker, current_time=None):
+    """
+    Fetches the current real-time snapshot for a cryptocurrency from Binance.
+
+    Source: Binance API (/api/v3/ticker/24hr)
+    
+    Args:
+        ticker (str): The crypto symbol (e.g., 'BTC', 'ETH').
+        current_time (float, optional): Reference Unix timestamp for caching.
+
+    Returns:
+        dict: A dictionary containing 'Name', 'Close' (price), 'Volume', 
+              '24h Change', and 'Market Cap', or None if fetch fails.
+    """
     if current_time is None:
         current_time = time.time()
     # Ensure ticker is clean (remove -USD if present for Binance)
@@ -295,7 +430,7 @@ def fetch_crypto_data(ticker, current_time=None):
 
     try:
         # logging.info(f"[Binance] Fetching market data for {clean_ticker}...")
-        response = requests.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={clean_ticker}USDT").json()
+        response = requests.get(f"{BINANCE_SNAPSHOT_URL}?symbol={clean_ticker}USDT").json()
         if "lastPrice" in response:
             name_mapping = {
                 "BTC": "Bitcoin",
@@ -325,7 +460,7 @@ def fetch_crypto_data(ticker, current_time=None):
             save_cache()
             return data
     except Exception as e:
-        logging.error(f"Error fetching {clean_ticker}: {e}")
+        logging.error(f"Error fetching crypto snapshot for {clean_ticker}: {e}")
     return None
 
 def fetch_market_data():
@@ -342,7 +477,7 @@ def fetch_market_data():
         logging.info(f"Checking Stocks in category: {category}...")
         for ticker in tickers:
             logging.info(f"   - Fetching {ticker} (Stocks)...")
-            data = fetch_yfinance_data(ticker, current_time)
+            data = fetch_stock_etf_snapshot(ticker, current_time)
             if data:
                 market_data["Stocks"][ticker] = data
 
@@ -350,7 +485,7 @@ def fetch_market_data():
         logging.info(f"Checking ETFs in category: {category}...")
         for ticker in tickers:
             logging.info(f"   - Fetching {ticker} (ETFs)...")
-            data = fetch_yfinance_data(ticker, current_time)
+            data = fetch_stock_etf_snapshot(ticker, current_time)
             if data:
                 market_data["ETFs"][ticker] = data
 
@@ -359,7 +494,7 @@ def fetch_market_data():
         logging.info(f"Checking Crypto in category: {category}...")
         for ticker in tickers:
             logging.info(f"   - Fetching {ticker} (Crypto)...")
-            data = fetch_crypto_data(ticker, current_time)
+            data = fetch_crypto_snapshot(ticker, current_time)
             if data:
                 market_data["Crypto"][ticker] = data
 
@@ -400,14 +535,12 @@ def fetch_historical_data(ticker, category, period=None):
         logging.info(f"📅 Fetching 10Y historical data for {ticker} ({category}) as base...")
         try:
             if category in ["Stocks", "ETFs"]:
-                stock = yf.Ticker(ticker)
-                df = stock.history(period=primary_period)
+                df = fetch_stock_etf_timeseries(ticker, period=primary_period)
                 if df is not None and not df.empty:
                     df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
             elif category == "Crypto":
-                from backend.technical_analysis import fetch_crypto_data as fetch_binance_hist
                 limit = parse_period_to_days(primary_period)
-                df = fetch_binance_hist(ticker + "USDT", limit=limit)
+                df = fetch_crypto_timeseries(ticker + "USDT", limit=limit)
             
             if df is not None and not df.empty:
                 with CACHE_LOCK:

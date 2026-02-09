@@ -17,7 +17,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from backend.config import PORTFOLIO_FILE
 from backend.portfolio_optimizer import generate_strategy
 from backend.analyze_my_portfolio import run_portfolio_analysis
+from backend.verification_service import verification_service
 import pandas as pd
+from io import StringIO
 
 app = Flask(__name__)
 CORS(app)  # Enables CORS for frontend requests
@@ -51,7 +53,6 @@ def analyze_user_portfolio():
             portfolio_csv = None
 
         if portfolio_csv:
-            from io import StringIO
             # Handle potential header issues or empty trailing lines
             portfolio_csv = portfolio_csv.strip()
             df_holdings = pd.read_csv(StringIO(portfolio_csv))
@@ -70,7 +71,6 @@ def analyze_user_portfolio():
 def run_accuracy_verification_simulation():
     """Triggers the backend accuracy verification simulation."""
     try:
-        from backend.verification_service import verification_service
         data = request.json or {}
         holdings = data.get("holdings")
         timeframe_months = int(data.get("timeframe", 12))

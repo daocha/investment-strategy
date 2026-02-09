@@ -3,10 +3,13 @@ import pandas as pd
 from scipy.optimize import minimize
 from backend.config import (
     RISK_SETTINGS, RSI_THRESHOLD, MACD_THRESHOLD, MAX_NUM_ASSETS, 
-    MODEL_PATH, PORTFOLIO_FILE, BINANCE_API_URL, DEFAULT_BACKTEST_PERIOD,
-    CRYPTO_ETF_MAPPING, CURRENCY_SYMBOLS
+    MODEL_PATH, PORTFOLIO_FILE, DEFAULT_BACKTEST_PERIOD,
+    CRYPTO_ETF_MAPPING, CURRENCY_SYMBOLS, CACHE_TTL
 )
-from backend.market_data import fetch_market_data, fetch_historical_returns, fetch_historical_data, fetch_yfinance_data
+from backend.market_data import (
+    fetch_market_data, fetch_historical_returns, fetch_historical_data, 
+    fetch_stock_etf_snapshot, fetch_crypto_snapshot, MARKET_DATA_CACHE, CACHE_LOCK, save_cache, get_fx_rate
+)
 from backend.sentiment_analysis import analyze_sentiment
 from backend.technical_analysis import calculate_indicators
 from backend.backtesting import run_backtest as backtest_strategy
@@ -17,6 +20,7 @@ import re
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -208,28 +212,55 @@ def process_single_asset(asset, category, timeframe, market_data_entry, min_annu
             return None
 
         # 4. Generate All Features (Centralized Pipeline)
-        df_features = FeaturesPipeline.generate_feature_set(hist_data)
+        # Check Cache for prediction
+        current_time = time.time()
+        cache_key = f"prediction_{asset}"
         
-        # XGBoost Prediction
-        signal = "Hold"
-        confidence = 0.0
-        predicted_return = 0.0
-        
-        if not df_features.empty:
-            signal, confidence = xgb_model.predict(hist_data) # predict() internaly calls Pipeline, so it's consistent
-            
-            # Extract volatility from the market module's output
-            latest_row = df_features.iloc[-1]
-            volatility = latest_row.get('Volatility', 0.20)
-            
-            if signal == "Buy":
-                predicted_return = volatility * confidence
-            elif signal == "Sell":
-                predicted_return = -volatility * confidence
-            else:
-                predicted_return = 0.05 * confidence
+        cached_prediction = None
+        with CACHE_LOCK:
+            if cache_key in MARKET_DATA_CACHE:
+                cached_data, timestamp = MARKET_DATA_CACHE[cache_key]
+                if current_time - timestamp < CACHE_TTL:
+                    cached_prediction = cached_data
+                    logging.info(f"💾 Using cached prediction for {asset}")
+
+        if cached_prediction:
+            signal = cached_prediction["signal"]
+            confidence = cached_prediction["confidence"]
+            volatility = cached_prediction["volatility"]
         else:
-            volatility = 0.20
+            df_features = FeaturesPipeline.generate_feature_set(hist_data)
+            
+            # XGBoost Prediction
+            signal = "Hold"
+            confidence = 0.0
+            
+            if not df_features.empty:
+                signal, confidence = xgb_model.predict(hist_data) # predict() internaly calls Pipeline, so it's consistent
+                
+                # Extract volatility from the market module's output
+                latest_row = df_features.iloc[-1]
+                volatility = latest_row.get('Volatility', 0.20)
+                
+                # Cache the prediction
+                with CACHE_LOCK:
+                    MARKET_DATA_CACHE[cache_key] = ({
+                        "signal": signal,
+                        "confidence": confidence,
+                        "volatility": volatility
+                    }, current_time)
+                save_cache()
+            else:
+                volatility = 0.20
+
+        # XGBoost prediction return calculation (scaled later by timeframe)
+        predicted_return = 0.0
+        if signal == "Buy":
+            predicted_return = volatility * confidence
+        elif signal == "Sell":
+            predicted_return = -volatility * confidence
+        else:
+            predicted_return = 0.05 * confidence
 
         # 5. Combined Return Calculation (Scale by timeframe/12 using geometric compounding)
         timeframe_factor = timeframe / 12.0
@@ -274,8 +305,6 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
     Builds an optimized investment portfolio using Parallel Processing and XGBoost.
     Values are returned in the specified base_currency.
     """
-    from backend.market_data import get_fx_rate
-    
     # Currency symbol mapping
     base_symbol = CURRENCY_SYMBOLS.get(base_currency, base_currency)
 
@@ -476,7 +505,7 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
         native_currency = "USD"
         if entry["asset"].endswith(".HK"): native_currency = "HKD"
         elif entry["asset"].endswith(".TW"): native_currency = "TWD"
-        # ... but we already have fetch_yfinance_data which gets it.
+        # ... but we already have fetch_stock_etf_snapshot which gets it.
         
         # Let's just fetch the currency from the cache/ticker info
         native_currency = "USD"
@@ -527,8 +556,13 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
 
     # **Process Benchmark (S&P 500)**
     benchmark_results = None
+    # 1. Fetch Current Data
+    # The 'data' and 'category' variables here are from the main function scope,
+    # but for the benchmark, we need to fetch specific data for '^GSPC'.
+    # The original logic was: gspc_data = fetch_market_data()["Stocks"].get("^GSPC") or fetch_stock_etf_snapshot("^GSPC")
+    # This is being replaced by a more explicit call to fetch_stock_etf_snapshot for consistency.
     try:
-        gspc_data = fetch_market_data()["Stocks"].get("^GSPC") or fetch_yfinance_data("^GSPC")
+        gspc_data = fetch_stock_etf_snapshot("^GSPC") # Assuming fetch_stock_etf_snapshot is imported
         if gspc_data:
             benchmark_asset = process_single_asset("^GSPC", "Stocks", timeframe, gspc_data, -10.0, ignore_filters=True)
             if benchmark_asset:
@@ -547,6 +581,9 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
     portfolio_backtest_results["total_valuation"] = initial_amount 
     portfolio_backtest_results["base_currency"] = base_currency
     portfolio_backtest_results["base_symbol"] = base_symbol
+
+   
+    save_cache(force=True)
 
     return convert_floats({
         "portfolio_allocation": portfolio_allocation,
