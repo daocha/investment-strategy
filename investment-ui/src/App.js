@@ -463,6 +463,11 @@ AAPL,10,Stocks`}
                     <th style={{ padding: "16px 8px" }}>Units</th>
                     <th style={{ padding: "16px 8px" }}>Price</th>
                     <th style={{ padding: "16px 8px" }}>Value ({selectedCurrency})</th>
+                    <th
+                      style={{ padding: "16px 8px", cursor: "help" }}
+                      onMouseEnter={(e) => handleTooltip(e, "The AI's projected price for this asset at the end of the selected timeframe (in native currency).")}
+                      onMouseLeave={() => handleTooltip(null, null)}
+                    >Target Price</th>
                     <th style={{ padding: "16px 8px" }}>Alloc. %</th>
                     <th
                       style={{ padding: "16px 8px", cursor: "help" }}
@@ -521,8 +526,9 @@ AAPL,10,Stocks`}
                           </span>
                         </td>
                         <td style={{ padding: "16px 8px" }}>{asset.units?.toFixed(4) || "0.0000"}</td>
-                        <td style={{ padding: "16px 8px" }}>{asset.native_symbol}{asset.current_price_native?.toLocaleString(undefined, { minimumFractionDigits: 2 }) || "0.00"}</td>
+                        <td style={{ padding: "16px 8px" }}>{asset.native_symbol}{asset.current_price_native?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "0.00"}</td>
                         <td style={{ padding: "16px 8px" }}>{backtestResults?.base_symbol}{(asset.allocation || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                        <td style={{ padding: "16px 8px" }}>{asset.native_symbol}{asset.predicted_price_native?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "0.00"}</td>
                         <td style={{ padding: "16px 8px" }}>{asset.allocation_pct?.toFixed(2)}%</td>
                         <td style={{ padding: "16px 8px", color: (assetBacktest.predicted_profit || 0) >= 0 ? "var(--accent-green)" : "var(--accent-red)", fontWeight: "600" }}>
                           {backtestResults?.base_symbol}{assetBacktest.predicted_profit?.toLocaleString(undefined, { minimumFractionDigits: 2 }) || "0.00"}
