@@ -17,9 +17,8 @@ def run_backtest(asset, category=None, period=None, data=None):
     cache_key = f"backtest_{asset}"
     
     # 1. Check Cache
-    if data is None: # Only use cache if we are not passing/forcing data
-        with CACHE_LOCK:
-            if cache_key in MARKET_DATA_CACHE:
+    with CACHE_LOCK:
+        if cache_key in MARKET_DATA_CACHE:
                 cached_data, timestamp = MARKET_DATA_CACHE[cache_key]
                 if current_time - timestamp < CACHE_TTL:
                     logging.info(f"💾 Using cached backtest for {asset}")
