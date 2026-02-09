@@ -19,6 +19,8 @@ This project is a comprehensive **Investment Strategy Platform** that integrates
   - Runs historical performance tests on investment strategies.
 - **Portfolio Optimization**
   - Builds optimized portfolios based on **risk level, sentiment, technical analysis, and backtesting results**.
+- **Automated Maintenance**
+  - Background worker handles **12-hour market data refreshes** and **weekly AI retraining** (HKT schedule).
  
 ## Preview
 ![Screenshot 2026-02-10 at 12 02 53 AM](https://github.com/user-attachments/assets/56458fbd-7066-4090-8bab-2cc667a81650)
@@ -54,7 +56,7 @@ chmod +x startup.sh
 
 - **Backend**: Runs on `http://localhost:8848`
 - **Frontend**: Runs on `http://localhost:3848`
-- **Auto-Healing**: The script automatically detects missing dependencies (like `scikit-learn` or Node modules) and attempts to fix them.
+- **Maintenance**: Background worker refreshes data at 05:30/16:30 HKT.
 
 ### Manual Installation
 If you prefer identifying issues yourself:
@@ -73,11 +75,9 @@ PORT=3848 npm start
 ## AI Model Training
 The system uses an **XGBoost Classifier** to predict Buy/Sell/Hold signals.
 
-- **Auto-Generation**: If `backend/xgboost_model.json` is missing, `startup.sh` will automatically trigger `backend/train_model.py` to train a new model using 10 years of historical data.
-- **Manual Retraining**: You can force a retrain at any time:
-  ```bash
-  python3 backend/train_model.py
-  ```
+- **Auto-Generation**: If `backend/xgboost_model.json` is missing, `startup.sh` will automatically trigger training using 10 years of historical data.
+- **Scheduled Retraining**: The maintenance worker automatically retrains the model every Sunday at 00:00 HKT using refreshed data.
+- **Manual Retraining**: You can force a retrain at any time: `python3 backend/train_model.py`
 
 ## Usage
 
@@ -94,22 +94,11 @@ The system uses an **XGBoost Classifier** to predict Buy/Sell/Hold signals.
 
 ## Troubleshooting
 
-### Ubuntu / Linux Issues
-- **`ModuleNotFoundError: No module named 'sklearn'`**: This is required for XGBoost. Run `pip install scikit-learn` or use `./startup.sh` which fixes this automatically.
-- **`Error: Cannot find module ...` (Node.js)**: If you see this during `npm start`, run:
-  ```bash
-  cd investment-ui
-  npx browserslist@latest --update-db
-  rm -rf node_modules package-lock.json && npm install
-  ```
-
 ### Port Conflicts
-- The script tries to clear ports `8848` and `3848` before starting.
-- If you still see "Address already in use", you can manually kill "zombie" processes:
-  ```bash
-  lsof -ti :8848 | xargs kill -9
-  lsof -ti :3848 | xargs kill -9
-  ```
+The script tries to clear ports `8848` and `3848` before starting. If you still see "Address already in use", you can manually kill processes:
+```bash
+lsof -ti :8848,3848 | xargs kill -9
+```
 
 ## Contributors
 
