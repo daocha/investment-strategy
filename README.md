@@ -7,10 +7,8 @@ This project is a comprehensive **Investment Strategy Platform** that integrates
 ## Features
 
 - **Stock, ETF, and Crypto Price Prediction**
-  - Uses **Hybrid Models (XGBoost + ARIMA)** for stock price prediction.
-  - Uses **ARIMA** for ETFs.
-  - Uses **LSTM** for crypto predictions.
-  - Dynamically selects models based on asset volatility.
+  - Uses a **unified XGBoost Classifier** for all asset types.
+  - Dynamically computes confidence-weighted returns based on asset volatility.
 - **Market Data Integration**
   - Fetches historical and real-time data from **Binance** and **Yahoo Finance**.
 - **Sentiment Analysis**
@@ -26,10 +24,9 @@ This project is a comprehensive **Investment Strategy Platform** that integrates
 
 | Asset Type               | Model Used               |
 | ------------------------ | ------------------------ |
-| Stocks (Low Volatility)  | XGBoost                  |
-| Stocks (High Volatility) | Hybrid (XGBoost + ARIMA) |
-| ETFs                     | ARIMA                    |
-| Crypto                   | LSTM                     |
+| Stocks                   | XGBoost                  |
+| ETFs                     | XGBoost                  |
+| Crypto                   | XGBoost                  |
 
 ## Installation
 
