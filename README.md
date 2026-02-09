@@ -19,6 +19,10 @@ This project is a comprehensive **Investment Strategy Platform** that integrates
   - Runs historical performance tests on investment strategies.
 - **Portfolio Optimization**
   - Builds optimized portfolios based on **risk level, sentiment, technical analysis, and backtesting results**.
+ 
+## Preview
+![Screenshot 2026-02-10 at 12 02 53 AM](https://github.com/user-attachments/assets/56458fbd-7066-4090-8bab-2cc667a81650)
+
 
 ## Model Selection
 
