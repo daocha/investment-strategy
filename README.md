@@ -109,7 +109,7 @@ The system uses an **XGBoost Classifier** to predict Buy/Sell/Hold signals.
 
 ## Contributors
 
-- Ray LI (@daocha)
+- @daocha
 
 ## License
 

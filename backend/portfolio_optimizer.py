@@ -4,7 +4,7 @@ from scipy.optimize import minimize
 from backend.config import (
     RISK_SETTINGS, RSI_THRESHOLD, MACD_THRESHOLD, MAX_NUM_ASSETS, 
     MODEL_PATH, PORTFOLIO_FILE, BINANCE_API_URL, DEFAULT_BACKTEST_PERIOD,
-    CRYPTO_ETF_MAPPING
+    CRYPTO_ETF_MAPPING, CURRENCY_SYMBOLS
 )
 from backend.market_data import fetch_market_data, fetch_historical_returns, fetch_historical_data, fetch_yfinance_data
 from backend.sentiment_analysis import analyze_sentiment
@@ -277,8 +277,7 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
     from backend.market_data import get_fx_rate
     
     # Currency symbol mapping
-    currency_symbols = {"USD": "$", "HKD": "HK$", "TWD": "NT$", "EUR": "€", "GBP": "£"}
-    base_symbol = currency_symbols.get(base_currency, base_currency)
+    base_symbol = CURRENCY_SYMBOLS.get(base_currency, base_currency)
 
     # Map integer risk level to category
     if isinstance(risk_level, (int, float)) or (isinstance(risk_level, str) and risk_level.isdigit()):
@@ -494,7 +493,7 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
                 elif entry["asset"].endswith(".L"): native_currency = "GBP"
         
         fx_rate = get_fx_rate(native_currency, base_currency)
-        native_symbol = currency_symbols.get(native_currency, native_currency)
+        native_symbol = CURRENCY_SYMBOLS.get(native_currency, native_currency)
 
         allocation = round(weights[i] * initial_amount, 2)
         current_price_native = entry["current_price"]
