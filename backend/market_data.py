@@ -370,55 +370,67 @@ def fetch_historical_data(ticker, category, period=None):
     """
     Fetches historical price data. 
     period can be "1y", "2y", "5y", etc. Defaults to DEFAULT_BACKTEST_PERIOD from config.
+    Now optimized to always use 10y as the base dataset to minimize redundant fetches.
     """
     if period is None:
         period = DEFAULT_BACKTEST_PERIOD
         
-    cache_key = f"hist_{ticker}_{period}"
+    # Always use 10y as the primary cache key to avoid redundancy (e.g., hist_AAPL_5y vs hist_AAPL_10y)
+    primary_period = "10y"
+    cache_key = f"hist_{ticker}_{primary_period}"
     current_time = time.time()
     
-    # 1. Try Cache First
+    # 1. Try Cache First (Always look for the 10y version)
+    df = None
     if cache_key in MARKET_DATA_CACHE:
         data, timestamp = MARKET_DATA_CACHE[cache_key]
         if current_time - timestamp < 86400: # Cache historical data for 24 hours
              # Check if data is in 'split' format (dict with 'index', 'columns', 'data')
              if isinstance(data, dict) and "columns" in data:
-                 df_cached = pd.DataFrame(data["data"], index=data["index"], columns=data["columns"])
-                 df_cached.index = pd.to_datetime(df_cached.index, utc=True).tz_localize(None)
-                 return df_cached
+                 df = pd.DataFrame(data["data"], index=data["index"], columns=data["columns"])
+                 df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
              else:
                  # Legacy format handling
-                 df_cached = pd.DataFrame(data)
-                 if not df_cached.empty:
-                     df_cached.index = pd.to_datetime(df_cached.index, utc=True).tz_localize(None)
-                 return df_cached
+                 df = pd.DataFrame(data)
+                 if not df.empty:
+                     df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
 
-    logging.info(f"📅 Fetching historical data for {ticker} ({category}, {period})...")
-    df = None
-    try:
-        if category in ["Stocks", "ETFs"]:
-            stock = yf.Ticker(ticker)
-            df = stock.history(period=period)
+    # 2. Fetch if not in cache or if we need a fresh fetch
+    if df is None:
+        logging.info(f"📅 Fetching 10Y historical data for {ticker} ({category}) as base...")
+        try:
+            if category in ["Stocks", "ETFs"]:
+                stock = yf.Ticker(ticker)
+                df = stock.history(period=primary_period)
+                if df is not None and not df.empty:
+                    df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
+            elif category == "Crypto":
+                from backend.technical_analysis import fetch_crypto_data as fetch_binance_hist
+                limit = parse_period_to_days(primary_period)
+                df = fetch_binance_hist(ticker + "USDT", limit=limit)
+            
             if df is not None and not df.empty:
-                # Force UTC then strip TZ to handle any mixed TZs reliably
-                df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
-        elif category == "Crypto":
-            # Avoid circular import by importing inside function if needed, 
-            # or just use the logic from technical_analysis
-            from backend.technical_analysis import fetch_crypto_data as fetch_binance_hist
-            # Calculate limit dynamically from period
-            limit = parse_period_to_days(period)
-            df = fetch_binance_hist(ticker + "USDT", limit=limit)
-        
-        if df is not None and not df.empty:
-            # Convert to split format to avoid Timestamp-as-key JSON errors
-            with CACHE_LOCK:
-                MARKET_DATA_CACHE[cache_key] = (df.to_dict(orient='split'), current_time)
-            save_cache()
+                with CACHE_LOCK:
+                    MARKET_DATA_CACHE[cache_key] = (df.to_dict(orient='split'), current_time)
+                save_cache()
+        except Exception as e:
+            logging.error(f"Error fetching historical data for {ticker}: {e}")
+
+    # 3. Dynamic Slicing for the requested period
+    if df is not None and not df.empty:
+        if period == primary_period:
             return df
-    except Exception as e:
-        logging.error(f"Error fetching historical data for {ticker}: {e}")
-    
+            
+        # Slice for smaller periods
+        requested_days = parse_period_to_days(period)
+        cutoff_date = df.index[-1] - pd.Timedelta(days=requested_days)
+        sliced_df = df[df.index >= cutoff_date].copy()
+        
+        # Ensure we have enough data (if 10y fetch returned less than 1y, sliced might be empty)
+        if not sliced_df.empty:
+            return sliced_df
+        return df # Fallback to whatever we have if slice is empty
+
     logging.warning(f"❌ fetch_historical_data failed for {ticker} ({category}) - returning None")
     return None
 
