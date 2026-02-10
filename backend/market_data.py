@@ -8,6 +8,7 @@ import os
 import numpy as np # Added numpy
 import pandas as pd # Added pandas
 from dotenv import load_dotenv
+import redis
 
 import threading # Added threading for lock
 
@@ -15,15 +16,140 @@ load_dotenv()
 
 from backend.config import (
     ASSET_LIST, CACHE_FILE, CACHE_TTL, USE_DEEPSEEK_API, 
-    BINANCE_KLINES_URL, BINANCE_SNAPSHOT_URL, DEEPSEEK_API_URL, DEFAULT_BACKTEST_PERIOD
+    BINANCE_KLINES_URL, BINANCE_SNAPSHOT_URL, DEEPSEEK_API_URL, DEFAULT_BACKTEST_PERIOD,
+    PRIMARY_CACHE_PERIOD, REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD
 )
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-MARKET_DATA_CACHE = {}
-CACHE_LOCK = threading.Lock() # Added lock for thread-safety
+class MarketDataCache:
+    """A proxy dictionary that interfaces with Redis or a local dict for granular caching."""
+    def __init__(self):
+        self._local_cache = {}
+        self._redis_client = None
+        self._prefix = "market_data:"
+
+    def set_redis_client(self, client):
+        self._redis_client = client
+
+    def _get_redis_key(self, key):
+        return f"{self._prefix}{key}"
+
+    def __getitem__(self, key):
+        if self._redis_client:
+            try:
+                # Use HGETALL to get all fields in the hash
+                val_hash = self._redis_client.hgetall(self._get_redis_key(key))
+                if val_hash:
+                    data = json.loads(val_hash.get("data"))
+                    timestamp = float(val_hash.get("timestamp", 0))
+                    return (data, timestamp)
+                raise KeyError(key)
+            except Exception as e:
+                logging.error(f"❌ Redis error in __getitem__: {e}")
+        return self._local_cache[key]
+
+    def __setitem__(self, key, value):
+        if self._redis_client:
+            try:
+                # Expecting value to be (data, timestamp)
+                data, timestamp = value
+                redis_key = self._get_redis_key(key)
+                
+                # Store as hash fields
+                self._redis_client.hset(redis_key, mapping={
+                    "data": json.dumps(data, cls=CustomJSONEncoder),
+                    "timestamp": str(timestamp)
+                })
+                # Set TTL
+                self._redis_client.expire(redis_key, CACHE_TTL)
+                return
+            except Exception as e:
+                logging.error(f"❌ Redis error in __setitem__: {e}")
+        self._local_cache[key] = value
+
+    def __contains__(self, key):
+        if self._redis_client:
+            try:
+                return self._redis_client.exists(self._get_redis_key(key)) > 0
+            except Exception as e:
+                logging.error(f"❌ Redis error in __contains__: {e}")
+        return key in self._local_cache
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def pop(self, key, default=None):
+        if self._redis_client:
+            try:
+                val = self.get(key)
+                self._redis_client.delete(self._get_redis_key(key))
+                return val
+            except Exception as e:
+                logging.error(f"❌ Redis error in pop: {e}")
+        return self._local_cache.pop(key, default)
+
+    def update(self, other):
+        for k, v in other.items():
+            self[k] = v
+
+    def copy(self):
+        """Returns a snapshot of the cache as a dict. Use sparingly with Redis."""
+        if self._redis_client:
+            try:
+                keys = []
+                cursor = '0'
+                while cursor != 0:
+                    cursor, batch = self._redis_client.scan(cursor=cursor, match=f"{self._prefix}*", count=100)
+                    keys.extend(batch)
+                
+                if not keys:
+                    return {}
+
+                result = {}
+                for k in keys:
+                    v_hash = self._redis_client.hgetall(k)
+                    if v_hash:
+                        internal_key = k.replace(self._prefix, "", 1)
+                        data = json.loads(v_hash.get("data"))
+                        timestamp = float(v_hash.get("timestamp", 0))
+                        result[internal_key] = (data, timestamp)
+                return result
+            except Exception as e:
+                logging.error(f"❌ Redis error in copy: {e}")
+        return self._local_cache.copy()
+
+    def __len__(self):
+        """Returns the number of keys. Note: For Redis, this only returns the local fallback count to avoid expensive scans."""
+        return len(self._local_cache)
+
+MARKET_DATA_CACHE = MarketDataCache()
+CACHE_LOCK = threading.Lock()
+API_LOCK = threading.RLock() # Serializes external API calls. RLock prevents deadlocks if nested calls occur.
 LAST_SAVE_TIME = 0
 SAVE_INTERVAL = 30 # Only save to disk every 30 seconds to avoid bottleneck
+
+# Initialize Redis Client if configured
+redis_client = None
+if REDIS_HOST:
+    try:
+        redis_client = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            db=REDIS_DB,
+            password=REDIS_PASSWORD,
+            decode_responses=True
+        )
+        # Test connection
+        redis_client.ping()
+        MARKET_DATA_CACHE.set_redis_client(redis_client)
+        logging.info(f"✅ Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+    except Exception as e:
+        logging.warning(f"⚠️ Redis configured but failed to connect: {e}. Falling back to file cache.")
+        redis_client = None
 
 class CustomJSONEncoder(json.JSONEncoder):
     """Custom JSON Encoder for NumPy and Pandas types."""
@@ -39,17 +165,52 @@ class CustomJSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 def load_cache():
-    """Loads market data cache from local disk."""
-    global MARKET_DATA_CACHE
+    """Loads market data cache from Redis or local disk."""
     with CACHE_LOCK:
+        if redis_client:
+            # Check if Redis has any data
+            try:
+                # Use SCAN to check for existence of granular keys
+                cursor, keys = redis_client.scan(cursor=0, match="market_data:*", count=1)
+                if keys:
+                    logging.debug("📂 Redis granular cache active")
+                    return # Already has data, lazy loading will handle the rest
+                logging.info("ℹ️ Redis cache is empty.")
+            except Exception as e:
+                logging.error(f"⚠️ Failed to check Redis status: {e}")
+
+        # Fallback/Seeding logic: load file and push to Redis if empty
         if os.path.exists(CACHE_FILE):
             try:
                 with open(CACHE_FILE, "r") as f:
-                    MARKET_DATA_CACHE = json.load(f)
-                logging.info(f"📂 Loaded market data cache from {CACHE_FILE}")
+                    file_data = json.load(f)
+                
+                if redis_client:
+                    logging.info(f"🚀 Seeding Redis cache from {CACHE_FILE}...")
+                    # Bulk set using pipeline to be efficient
+                    pipe = redis_client.pipeline()
+                    for k, v in file_data.items():
+                        # Expecting file data to be tuple/list of (data, timestamp)
+                        try:
+                            data, timestamp = v
+                            redis_key = f"market_data:{k}"
+                            pipe.hset(redis_key, mapping={
+                                "data": json.dumps(data, cls=CustomJSONEncoder),
+                                "timestamp": str(timestamp)
+                            })
+                            pipe.expire(redis_key, CACHE_TTL)
+                        except Exception as e:
+                            logging.warning(f"⚠️ Skipping invalid cache entry {k}: {e}")
+                    pipe.execute()
+                    logging.info(f"✅ Seeding complete ({len(file_data)} keys)")
+                else:
+                    MARKET_DATA_CACHE._local_cache = file_data
+                    logging.info(f"📂 Loaded market data cache from {CACHE_FILE}")
             except Exception as e:
-                logging.error(f"⚠️ Failed to load cache: {e}")
-                MARKET_DATA_CACHE = {}
+                logging.error(f"⚠️ Failed to load/seed file cache: {e}")
+        else:
+            if not redis_client:
+                logging.info("ℹ️ No cache file found and Redis not configured. Starting fresh.")
 
 def save_cache(force=False):
     """Saves market data cache to local disk using an atomic write with throttling."""
@@ -61,9 +222,16 @@ def save_cache(force=False):
 
     try:
         with CACHE_LOCK:
-            # Create a copy to ensure thread-safety during serialization
-            cache_copy = MARKET_DATA_CACHE.copy()
-            
+            if redis_client:
+                # Redis writes are handled granularly via MarketDataCache.__setitem__
+                # Just update the save time to prevent redundant logs/checks
+                LAST_SAVE_TIME = current_time
+                if force:
+                    logging.info("💾 Redis granular storage active")
+                return
+
+            # Fallback to File Save (only if Redis is not active)
+            cache_copy = MARKET_DATA_CACHE._local_cache.copy()
             tmp_file = f"{CACHE_FILE}.tmp"
             with open(tmp_file, "w") as f:
                 json.dump(cache_copy, f, cls=CustomJSONEncoder)
@@ -190,20 +358,21 @@ def get_fx_rate(from_currency, to_currency="USD"):
     
     if cache_key in MARKET_DATA_CACHE:
         rate, timestamp = MARKET_DATA_CACHE[cache_key]
-        if current_time - timestamp < 3600: # Cache FX for 1 hour
+        if current_time - timestamp < CACHE_TTL:
             return rate
 
-    try:
-        ticker = yf.Ticker(pair)
-        data = ticker.history(period="1d")
-        if not data.empty:
-            rate = float(data["Close"].iloc[-1])
-            with CACHE_LOCK:
-                MARKET_DATA_CACHE[cache_key] = (rate, current_time)
-            save_cache()
-            return rate
-    except Exception as e:
-        logging.error(f"Error fetching FX rate for {pair}: {e}")
+    with API_LOCK:
+        try:
+            ticker = yf.Ticker(pair)
+            data = ticker.history(period="1d")
+            if not data.empty:
+                rate = float(data["Close"].iloc[-1])
+                with CACHE_LOCK:
+                    MARKET_DATA_CACHE[cache_key] = (rate, current_time)
+                save_cache()
+                return rate
+        except Exception as e:
+            logging.error(f"Error fetching FX rate for {pair}: {e}")
     
     return 1.0 # Default to 1.0 if fetch fails
 
@@ -234,20 +403,21 @@ def get_historical_fx_rate(from_currency, to_currency="USD", date=None):
         return 1.0
     
     pair = f"{from_currency}{to_currency}=X"
-    try:
-        ticker = yf.Ticker(pair)
-        # Fetch a small window around the date to ensure we get a valid trading day
-        if date:
-            start_date = pd.to_datetime(date)
-            # Use 5 days window to handle weekends/holidays
-            end_date = start_date + pd.Timedelta(days=5)
-            data = ticker.history(start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
-            if not data.empty:
-                return float(data["Close"].iloc[0])
-        else:
-            return get_fx_rate(from_currency, to_currency)
-    except Exception as e:
-        logging.error(f"Error fetching historical FX rate for {pair} on {date}: {e}")
+    with API_LOCK:
+        try:
+            ticker = yf.Ticker(pair)
+            # Fetch a small window around the date to ensure we get a valid trading day
+            if date:
+                start_date = pd.to_datetime(date)
+                # Use 5 days window to handle weekends/holidays
+                end_date = start_date + pd.Timedelta(days=5)
+                data = ticker.history(start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
+                if not data.empty:
+                    return float(data["Close"].iloc[0])
+            else:
+                return get_fx_rate(from_currency, to_currency)
+        except Exception as e:
+            logging.error(f"Error fetching historical FX rate for {pair} on {date}: {e}")
     
     return 1.0
 
@@ -265,22 +435,23 @@ def fetch_stock_etf_timeseries(symbol, period="6mo"):
         pd.DataFrame: A cleaned DataFrame with DatetimeIndex and OHLCV columns, 
                      or None if an error occurs or no data is found.
     """
-    try:
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period, interval="1d")
+    with API_LOCK:
+        try:
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period=period, interval="1d")
 
-        if df.empty:
-            logging.warning(f"⚠️ No historical data found for {symbol}. It may be delisted.")
+            if df.empty:
+                logging.warning(f"⚠️ No historical data found for {symbol}. It may be delisted.")
+                return None
+
+            # Force UTC then strip TZ to handle any mixed TZs reliably
+            df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
+            df = df[["Open", "High", "Low", "Close", "Volume"]]
+            df.dropna(inplace=True)
+            return df
+        except Exception as e:
+            logging.error(f"❌ Error fetching data for {symbol} from Yahoo Finance: {e}")
             return None
-
-        # Force UTC then strip TZ to handle any mixed TZs reliably
-        df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
-        df = df[["Open", "High", "Low", "Close", "Volume"]]
-        df.dropna(inplace=True)
-        return df
-    except Exception as e:
-        logging.error(f"❌ Error fetching data for {symbol} from Yahoo Finance: {e}")
-        return None
 
 def fetch_crypto_timeseries(symbol, interval="1d", limit=180):
     """
@@ -302,51 +473,52 @@ def fetch_crypto_timeseries(symbol, interval="1d", limit=180):
     current_limit = limit
     end_time = None
 
-    try:
-        while current_limit > 0:
-            fetch_count = min(current_limit, 1000)
-            params = {"symbol": symbol, "interval": interval, "limit": fetch_count}
-            if end_time:
-                params["endTime"] = end_time - 1
-            
-            response = requests.get(BINANCE_KLINES_URL, params=params)
-            data = response.json()
+    with API_LOCK:
+        try:
+            while current_limit > 0:
+                fetch_count = min(current_limit, 1000)
+                params = {"symbol": symbol, "interval": interval, "limit": fetch_count}
+                if end_time:
+                    params["endTime"] = end_time - 1
+                
+                response = requests.get(BINANCE_KLINES_URL, params=params)
+                data = response.json()
 
-            if not data or "code" in data or len(data) == 0:
-                break
+                if not data or "code" in data or len(data) == 0:
+                    break
+                
+                # Binance returns rows ordered by time (oldest first in the result list)
+                # To paginate BACKWARDS, we prepend new data to our list and use the first timestamp as our new endTime
+                all_data = data + all_data
+                end_time = data[0][0] # The timestamp of the oldest record in this batch
+                
+                current_limit -= len(data)
+                if len(data) < fetch_count:
+                    break # No more data available
             
-            # Binance returns rows ordered by time (oldest first in the result list)
-            # To paginate BACKWARDS, we prepend new data to our list and use the first timestamp as our new endTime
-            all_data = data + all_data
-            end_time = data[0][0] # The timestamp of the oldest record in this batch
-            
-            current_limit -= len(data)
-            if len(data) < fetch_count:
-                break # No more data available
-        
-        if not all_data:
+            if not all_data:
+                return None
+
+            # Binance returns: [timestamp, open, high, low, close, volume, ...]
+            df = pd.DataFrame(all_data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume",
+                                            "CloseTime", "QuoteAssetVolume", "Trades", "TakerBuyBase", "TakerBuyQuote", "Ignore"])
+
+            df["Open"] = df["Open"].astype(float)
+            df["High"] = df["High"].astype(float)
+            df["Low"] = df["Low"].astype(float)
+            df["Close"] = df["Close"].astype(float)
+            df["Volume"] = df["Volume"].astype(float)
+
+            df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit='ms')
+            df.set_index("Timestamp", inplace=True)
+
+            # Remove duplicates if any (due to overlapping boundaries)
+            df = df[~df.index.duplicated(keep='first')]
+            df = df[["Open", "High", "Low", "Close", "Volume"]]
+            return df
+        except Exception as e:
+            logging.error(f"❌ Error fetching data for {symbol} from Binance: {e}")
             return None
-
-        # Binance returns: [timestamp, open, high, low, close, volume, ...]
-        df = pd.DataFrame(all_data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume",
-                                         "CloseTime", "QuoteAssetVolume", "Trades", "TakerBuyBase", "TakerBuyQuote", "Ignore"])
-
-        df["Open"] = df["Open"].astype(float)
-        df["High"] = df["High"].astype(float)
-        df["Low"] = df["Low"].astype(float)
-        df["Close"] = df["Close"].astype(float)
-        df["Volume"] = df["Volume"].astype(float)
-
-        df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit='ms')
-        df.set_index("Timestamp", inplace=True)
-
-        # Remove duplicates if any (due to overlapping boundaries)
-        df = df[~df.index.duplicated(keep='first')]
-        df = df[["Open", "High", "Low", "Close", "Volume"]]
-        return df
-    except Exception as e:
-        logging.error(f"❌ Error fetching data for {symbol} from Binance: {e}")
-        return None
 
 def fetch_stock_etf_snapshot(ticker, current_time=None):
     """
@@ -370,41 +542,43 @@ def fetch_stock_etf_snapshot(ticker, current_time=None):
         if current_time - timestamp < CACHE_TTL:
             return data
 
-    try:
-        stock = yf.Ticker(ticker)
-        history = stock.history(period="1d")
-        if not history.empty:
-            try:
-                info = stock.info
-            except Exception:
-                info = {}
-            
-            if info is None:
-                info = {}
+    # Serialize API calls to avoid 429s/blocking
+    with API_LOCK:
+        try:
+            stock = yf.Ticker(ticker)
+            history = stock.history(period="1d")
+            if not history.empty:
+                try:
+                    info = stock.info
+                except Exception:
+                    info = {}
+                
+                if info is None:
+                    info = {}
 
-            # Safe currency extraction
-            currency = "USD"
-            try:
-                currency = stock.fast_info.get("currency", "USD")
-            except Exception:
-                # If fast_info fails, try simple info or heuristic
-                currency = info.get("currency", "USD")
+                # Safe currency extraction
+                currency = "USD"
+                try:
+                    currency = stock.fast_info.get("currency", "USD")
+                except Exception:
+                    # If fast_info fails, try simple info or heuristic
+                    currency = info.get("currency", "USD")
 
-            data = {
-                "Name": info.get("longName") or info.get("shortName") or ticker,
-                "Close": history["Close"].iloc[-1],
-                "Volume": history["Volume"].iloc[-1],
-                "Market Cap": info.get("marketCap", "N/A"),
-                "52-Week High": info.get("fiftyTwoWeekHigh", "N/A"),
-                "52-Week Low": info.get("fiftyTwoWeekLow", "N/A"),
-                "Currency": currency
-            }
-            with CACHE_LOCK:
-                MARKET_DATA_CACHE[cache_key] = (data, current_time)
-            save_cache()
-            return data
-    except Exception as e:
-        logging.error(f"Error fetching snapshot for {ticker}: {e}")
+                data = {
+                    "Name": info.get("longName") or info.get("shortName") or ticker,
+                    "Close": history["Close"].iloc[-1],
+                    "Volume": history["Volume"].iloc[-1],
+                    "Market Cap": info.get("marketCap", "N/A"),
+                    "52-Week High": info.get("fiftyTwoWeekHigh", "N/A"),
+                    "52-Week Low": info.get("fiftyTwoWeekLow", "N/A"),
+                    "Currency": currency
+                }
+                with CACHE_LOCK:
+                    MARKET_DATA_CACHE[cache_key] = (data, current_time)
+                save_cache()
+                return data
+        except Exception as e:
+            logging.error(f"Error fetching snapshot for {ticker}: {e}")
     return None
 
 def fetch_crypto_snapshot(ticker, current_time=None):
@@ -431,90 +605,97 @@ def fetch_crypto_snapshot(ticker, current_time=None):
         if current_time - timestamp < CACHE_TTL:
             return data
 
-    try:
-        # logging.info(f"[Binance] Fetching market data for {clean_ticker}...")
-        response = requests.get(f"{BINANCE_SNAPSHOT_URL}?symbol={clean_ticker}USDT").json()
-        if "lastPrice" in response:
-            name_mapping = {
-                "BTC": "Bitcoin",
-                "ETH": "Ethereum",
-                "SOL": "Solana",
-                "BNB": "Binance Coin",
-                "XRP": "Ripple",
-                "ADA": "Cardano",
-                "AVAX": "Avalanche",
-                "DOT": "Polkadot",
-                "LINK": "Chainlink",
-                "MATIC": "Polygon",
-                "LTC": "Litecoin",
-                "BCH": "Bitcoin Cash",
-                "AAVE": "Aave",
-                "UNI": "Uniswap"
-            }
-            data = {
-                "Name": name_mapping.get(clean_ticker, f"{clean_ticker} Crypto"),
-                "Close": float(response["lastPrice"]),
-                "Volume": float(response["quoteVolume"]),
-                "24h Change": float(response["priceChangePercent"]),
-                "Market Cap": "N/A"
-            }
-            with CACHE_LOCK:
-                MARKET_DATA_CACHE[cache_key] = (data, current_time)
-            save_cache()
-            return data
-    except Exception as e:
-        logging.error(f"Error fetching crypto snapshot for {clean_ticker}: {e}")
+    with API_LOCK:
+        try:
+            # logging.info(f"[Binance] Fetching market data for {clean_ticker}...")
+            response = requests.get(f"{BINANCE_SNAPSHOT_URL}?symbol={clean_ticker}USDT").json()
+            if "lastPrice" in response:
+                name_mapping = {
+                    "BTC": "Bitcoin",
+                    "ETH": "Ethereum",
+                    "SOL": "Solana",
+                    "BNB": "Binance Coin",
+                    "XRP": "Ripple",
+                    "ADA": "Cardano",
+                    "AVAX": "Avalanche",
+                    "DOT": "Polkadot",
+                    "LINK": "Chainlink",
+                    "MATIC": "Polygon",
+                    "LTC": "Litecoin",
+                    "BCH": "Bitcoin Cash",
+                    "AAVE": "Aave",
+                    "UNI": "Uniswap"
+                }
+                data = {
+                    "Name": name_mapping.get(clean_ticker, f"{clean_ticker} Crypto"),
+                    "Close": float(response["lastPrice"]),
+                    "Volume": float(response["quoteVolume"]),
+                    "24h Change": float(response["priceChangePercent"]),
+                    "Market Cap": "N/A"
+                }
+                with CACHE_LOCK:
+                    MARKET_DATA_CACHE[cache_key] = (data, current_time)
+                save_cache()
+                return data
+        except Exception as e:
+            logging.error(f"Error fetching crypto snapshot for {clean_ticker}: {e}")
     return None
+
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def fetch_market_data():
     """
-    Fetches real-time market data for trending stocks, ETFs, and cryptos.
-    Uses in-memory caching to avoid hitting APIs too frequently.
+    Fetches real-time market data for trending assets in PARALLEL.
     """
     trending_assets = get_trending_assets()
     market_data = {"Stocks": {}, "ETFs": {}, "Crypto": {}}
     current_time = time.time()
 
-    # Fetch Stocks & ETFs data
-    for category, tickers in trending_assets["Stocks"].items():
-        logging.info(f"Checking Stocks in category: {category}...")
-        for ticker in tickers:
-            logging.info(f"   - Fetching {ticker} (Stocks)...")
-            data = fetch_stock_etf_snapshot(ticker, current_time)
-            if data:
-                market_data["Stocks"][ticker] = data
+    tasks = []
+    # Identify all assets to fetch across categories
+    flatten_start = time.time()
+    for category, sub_cats in trending_assets.items():
+        for sub_cat, tickers in sub_cats.items():
+            for ticker in tickers:
+                tasks.append((ticker, category))
 
-    for category, tickers in trending_assets["ETFs"].items():
-        logging.info(f"Checking ETFs in category: {category}...")
-        for ticker in tickers:
-            logging.info(f"   - Fetching {ticker} (ETFs)...")
-            data = fetch_stock_etf_snapshot(ticker, current_time)
-            if data:
-                market_data["ETFs"][ticker] = data
 
-    # Fetch Crypto data
-    for category, tickers in trending_assets["Crypto"].items():
-        logging.info(f"Checking Crypto in category: {category}...")
-        for ticker in tickers:
-            logging.info(f"   - Fetching {ticker} (Crypto)...")
-            data = fetch_crypto_snapshot(ticker, current_time)
-            if data:
-                market_data["Crypto"][ticker] = data
+    logging.info(f"🚀 Parallel fetching {len(tasks)} market snapshots...")
+    fetch_start = time.time()
+    
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        future_to_asset = {}
+        for ticker, category in tasks:
+            if category in ["Stocks", "ETFs"]:
+                future_to_asset[executor.submit(fetch_stock_etf_snapshot, ticker, current_time)] = (ticker, category)
+            elif category == "Crypto":
+                future_to_asset[executor.submit(fetch_crypto_snapshot, ticker, current_time)] = (ticker, category)
 
-    logging.info("Finished fetching all market data.")
+        for future in as_completed(future_to_asset):
+            ticker, category = future_to_asset[future]
+            try:
+                data = future.result()
+                if data:
+                    market_data[category][ticker] = data
+            except Exception as e:
+                logging.error(f"❌ Parallel fetch error for {ticker}: {e}")
+
+    # One final save after batch fetch
+    save_start = time.time()
+    save_cache(force=True)
+    logging.info(f"Finished fetching all market data. Fetch took {save_start - fetch_start:.2f}s, Save took {time.time() - save_start:.2f}s")
     return market_data
 
-def fetch_historical_data(ticker, category, period=None):
+def fetch_historical_data(ticker, category, period=PRIMARY_CACHE_PERIOD):
     """
     Fetches historical price data. 
-    period can be "1y", "2y", "5y", etc. Defaults to DEFAULT_BACKTEST_PERIOD from config.
+    period can be "1y", "2y", "5y", etc. Defaults to PRIMARY_CACHE_PERIOD from config.
     Now optimized to always use 10y as the base dataset to minimize redundant fetches.
     """
-    if period is None:
-        period = DEFAULT_BACKTEST_PERIOD
         
-    # Always use 10y as the primary cache key to avoid redundancy (e.g., hist_AAPL_5y vs hist_AAPL_10y)
-    primary_period = "10y"
+    # Always use the primary cache period (e.g., 10y) as the master key to avoid redundancy
+    primary_period = PRIMARY_CACHE_PERIOD
     cache_key = f"hist_{ticker}_{primary_period}"
     current_time = time.time()
     
@@ -522,7 +703,7 @@ def fetch_historical_data(ticker, category, period=None):
     df = None
     if cache_key in MARKET_DATA_CACHE:
         data, timestamp = MARKET_DATA_CACHE[cache_key]
-        if current_time - timestamp < 86400: # Cache historical data for 24 hours
+        if current_time - timestamp < CACHE_TTL: # Cache historical data for period from config
              # Check if data is in 'split' format (dict with 'index', 'columns', 'data')
              if isinstance(data, dict) and "columns" in data:
                  df = pd.DataFrame(data["data"], index=data["index"], columns=data["columns"])
@@ -572,28 +753,32 @@ def fetch_historical_data(ticker, category, period=None):
 
 def fetch_historical_returns(tickers_with_categories, period="1y"):
     """
-    Fetches historical returns for a list of tickers.
-    Uses fetch_historical_data for centralized caching.
+    Fetches historical returns in parallel to avoid sequential bottlenecks.
     """
     series_dict = {}
     
-    for ticker, category in tickers_with_categories:
-        df = fetch_historical_data(ticker, category, period=period)
-        if df is not None and not df.empty:
-            # Force UTC then strip TZ to handle any mixed TZs reliably
-            df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
-            # Calculate returns and store in dict
-            series_dict[ticker] = df["Close"].pct_change()
+    logging.info(f"🚀 Batch fetching historical returns for {len(tickers_with_categories)} assets...")
+    
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        future_to_ticker = {
+            executor.submit(fetch_historical_data, ticker, category, period=period): ticker
+            for ticker, category in tickers_with_categories
+        }
+        
+        for future in as_completed(future_to_ticker):
+            ticker = future_to_ticker[future]
+            try:
+                df = future.result()
+                if df is not None and not df.empty:
+                    df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
+                    series_dict[ticker] = df["Close"].pct_change()
+            except Exception as e:
+                logging.error(f"❌ Error fetching historical returns for {ticker}: {e}")
     
     if not series_dict:
         return pd.DataFrame()
 
-    # Align all series into a single DataFrame
-    # Using join='outer' to preserve all trading days, then filling gaps with 0.0
-    # (exchange closed = 0% return)
     returns_df = pd.concat(series_dict, axis=1).fillna(0.0)
-    
-    # Drop the first row as it's always NaN for all assets due to pct_change()
     if not returns_df.empty:
         returns_df = returns_df.iloc[1:]
             

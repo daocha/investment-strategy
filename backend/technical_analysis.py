@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import logging
 import time
-from backend.config import CACHE_TTL
+from backend.config import CACHE_TTL, PRIMARY_CACHE_PERIOD
 from backend.features.technical import calculate_technical_features
 from backend.features import FeaturesPipeline
 from backend.market_data import (
@@ -27,10 +27,22 @@ def calculate_indicators(asset, category, data=None):
     # 1. Check Cache
     with CACHE_LOCK:
         if cache_key in MARKET_DATA_CACHE:
-                cached_data, timestamp = MARKET_DATA_CACHE[cache_key]
-                if current_time - timestamp < CACHE_TTL:
+            cached_indicators, indicators_ts = MARKET_DATA_CACHE[cache_key]
+            
+            # Check price history timestamp (dependency)
+            hist_key = f"hist_{asset}_{PRIMARY_CACHE_PERIOD}"
+            if hist_key in MARKET_DATA_CACHE:
+                _, hist_ts = MARKET_DATA_CACHE[hist_key]
+                # If indicators are older than the latest price data, force recalculate
+                if indicators_ts < hist_ts:
+                    logging.info(f"🔄 Price history for {asset} updated. Recalculating indicators...")
+                elif current_time - indicators_ts < CACHE_TTL:
                     logging.info(f"💾 Using cached indicators for {asset}")
-                    return cached_data
+                    return cached_indicators
+            elif current_time - indicators_ts < CACHE_TTL:
+                # No hist key in cache (rare), fallback to standard TTL
+                logging.info(f"💾 Using cached indicators for {asset} (no hist dependency found)")
+                return cached_indicators
 
     logging.info(f"📊 Calculating indicators for {asset} ({category})...")
 

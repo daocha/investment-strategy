@@ -8,3 +8,4 @@ requests
 scikit-learn
 xgboost
 python-dotenv
+redis>=5.0.0

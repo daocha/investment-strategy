@@ -4,11 +4,12 @@ from scipy.optimize import minimize
 from backend.config import (
     RISK_SETTINGS, RSI_THRESHOLD, MACD_THRESHOLD, MAX_NUM_ASSETS, 
     MODEL_PATH, PORTFOLIO_FILE, DEFAULT_BACKTEST_PERIOD,
-    CRYPTO_ETF_MAPPING, CURRENCY_SYMBOLS, CACHE_TTL
+    CRYPTO_ETF_MAPPING, CURRENCY_SYMBOLS, CACHE_TTL, PRIMARY_CACHE_PERIOD
 )
 from backend.market_data import (
     fetch_market_data, fetch_historical_returns, fetch_historical_data, 
-    fetch_stock_etf_snapshot, fetch_crypto_snapshot, MARKET_DATA_CACHE, CACHE_LOCK, save_cache, get_fx_rate
+    fetch_stock_etf_snapshot, fetch_crypto_snapshot, MARKET_DATA_CACHE, CACHE_LOCK, save_cache, get_fx_rate,
+    parse_period_to_days
 )
 from backend.sentiment_analysis import analyze_sentiment
 from backend.technical_analysis import calculate_indicators
@@ -160,43 +161,48 @@ def process_single_asset(asset, category, timeframe, market_data_entry, min_annu
     Returns asset data dict or None if filtered out.
     """
     try:
-        # 0. Fetch Historical Data Centrally (Reuse for Indicators, Backtest, Prediction)
-        # Handles Stocks, ETFs, and Crypto with local caching
-        hist_data = fetch_historical_data(asset, category, period=DEFAULT_BACKTEST_PERIOD)
+        # 0. Fetch FULL Historical Data (for accurate indicators)
+        # Defaults to PRIMARY_CACHE_PERIOD (10y)
+        full_hist_data = fetch_historical_data(asset, category)
         
-        if hist_data is None or hist_data.empty:
+        if full_hist_data is None or full_hist_data.empty:
             logging.warning(f"⚠️ No historical data for {asset}. Skipping.")
             return None
+        
+        # Create a sliced version for the backtest return calculation (to match DEFAULT_BACKTEST_PERIOD)
+        requested_days = parse_period_to_days(DEFAULT_BACKTEST_PERIOD)
+        cutoff_date = full_hist_data.index[-1] - pd.Timedelta(days=requested_days)
+        hist_data = full_hist_data[full_hist_data.index >= cutoff_date].copy()
+        
+        # Ensure we have enough data (if slicing returns empty, fallback to full)
+        # Ensure we have enough data (if slicing returns empty, fallback to full)
+        if hist_data.empty:
+            hist_data = full_hist_data
 
-        # 1. Sentiment Analysis (Route Crypto ETFs to underlying assets)
-        sentiment_asset = asset
         is_crypto_etf = asset in CRYPTO_ETF_MAPPING
-        if is_crypto_etf:
-            sentiment_asset = CRYPTO_ETF_MAPPING[asset]
-            logging.info(f"🔄 Routing sentiment for {asset} to underlying {sentiment_asset}")
-            
-        if precomputed_sentiment and sentiment_asset in precomputed_sentiment:
-            sentiment = precomputed_sentiment[sentiment_asset]
+
+        # 1. Sentiment Analysis
+        if precomputed_sentiment:
+            sentiment_score, confidence = precomputed_sentiment.get(asset, (0, 0))
         else:
-            sentiment = analyze_sentiment(sentiment_asset)
-            
-        sentiment_score = sentiment["score"]
-        sentiment_trend = sentiment["trend"]
-
-        if not ignore_filters and sentiment_trend == "negative":
-            logging.info(f"⏭️ Skipping {asset}: Negative sentiment")
+            sentiment_score, confidence = analyze_sentiment(asset)
+        
+        # 2. Technical Indicators - Generate features once for full dataset
+        # This calculates ALL indicators (SMA, RSI, MACD, etc.) needed for both filtering and ML
+        df_with_features = FeaturesPipeline.generate_feature_set(full_hist_data)
+        
+        if df_with_features is None or df_with_features.empty:
+            logging.warning(f"⚠️ Feature generation failed for {asset}. Skipping.")
             return None
-
-        # 2. Technical Indicators (Pass pre-fetched data)
-        indicators = calculate_indicators(asset, category, data=hist_data)
-        if not indicators: 
-            return None
-
-        # Filter by RSI/MACD if sentiment is just neutral
-        if not ignore_filters and sentiment_trend == "neutral":
-            rsi = indicators.get("RSI", 0)
-            macd = indicators.get("MACD", 0)
-            if rsi <= RSI_THRESHOLD or macd <= MACD_THRESHOLD:
+        
+        # Extract latest indicator values for filtering
+        latest_indicators = df_with_features.iloc[-1]
+        rsi = latest_indicators.get("RSI", 50)
+        macd = latest_indicators.get("MACD", 0)
+        
+        # Soft Filter: Skip if Sentiment is Neutral/Negative AND Technicals are weak
+        if not ignore_filters:
+            if sentiment_score <= 0 and (rsi < 40 or macd < 0):
                 logging.info(f"⏭️ Skipping {asset}: Neutral sentiment + Weak indicators (RSI:{rsi:.1f}, MACD:{macd:.1f})")
                 return None
 
@@ -219,37 +225,59 @@ def process_single_asset(asset, category, timeframe, market_data_entry, min_annu
         cached_prediction = None
         with CACHE_LOCK:
             if cache_key in MARKET_DATA_CACHE:
-                cached_data, timestamp = MARKET_DATA_CACHE[cache_key]
-                if current_time - timestamp < CACHE_TTL:
+                cached_data, prediction_ts = MARKET_DATA_CACHE[cache_key]
+                
+                # Check price history timestamp (dependency)
+                hist_key = f"hist_{asset}_{PRIMARY_CACHE_PERIOD}"
+                if hist_key in MARKET_DATA_CACHE:
+                    _, hist_ts = MARKET_DATA_CACHE[hist_key]
+                    # If prediction is older than latest price data, force recalculate
+                    if prediction_ts < hist_ts:
+                        logging.info(f"🔄 Price history for {asset} updated. Recalculating prediction...")
+                    elif current_time - prediction_ts < CACHE_TTL:
+                        cached_prediction = cached_data
+                        logging.info(f"💾 Using cached prediction for {asset}")
+                elif current_time - prediction_ts < CACHE_TTL:
+                    # No hist key in cache, fallback to standard TTL
                     cached_prediction = cached_data
-                    logging.info(f"💾 Using cached prediction for {asset}")
+                    logging.info(f"💾 Using cached prediction for {asset} (no hist dependency found)")
 
         if cached_prediction:
             signal = cached_prediction["signal"]
             confidence = cached_prediction["confidence"]
             volatility = cached_prediction["volatility"]
         else:
-            df_features = FeaturesPipeline.generate_feature_set(hist_data)
+            # 4a. Slice the already-computed features to match the backtest period
+            # This avoids recalculating features for the third time
+            requested_days = parse_period_to_days(DEFAULT_BACKTEST_PERIOD)
+            cutoff_date = df_with_features.index[-1] - pd.Timedelta(days=requested_days)
+            df_features = df_with_features[df_with_features.index >= cutoff_date].copy()
+            
+            # Fallback if slice is empty
+            if df_features.empty:
+                df_features = df_with_features
             
             # XGBoost Prediction
             signal = "Hold"
             confidence = 0.0
             
             if not df_features.empty:
-                signal, confidence = xgb_model.predict(hist_data) # predict() internaly calls Pipeline, so it's consistent
+               # 4b. Prediction
+               signal, confidence = xgb_model.predict(hist_data) 
                 
-                # Extract volatility from the market module's output
-                latest_row = df_features.iloc[-1]
-                volatility = latest_row.get('Volatility', 0.20)
+               # Extract volatility from the market module's output
+               latest_row = df_features.iloc[-1]
+               volatility = latest_row.get('Volatility', 0.20)
                 
-                # Cache the prediction
-                with CACHE_LOCK:
-                    MARKET_DATA_CACHE[cache_key] = ({
-                        "signal": signal,
-                        "confidence": confidence,
-                        "volatility": volatility
-                    }, current_time)
-                save_cache()
+               # Cache the prediction
+               with CACHE_LOCK:
+                   MARKET_DATA_CACHE[cache_key] = ({
+                       "signal": signal,
+                       "confidence": confidence,
+                       "volatility": volatility
+                   }, current_time)
+               # Save cache removed from here to separate I/O from compute loop
+               # save_cache() 
             else:
                 volatility = 0.20
 
@@ -288,7 +316,7 @@ def process_single_asset(asset, category, timeframe, market_data_entry, min_annu
             "category": category,
             "current_price": current_price,
             "combined_return": combined_return,
-            "backtest_annual_return": backtest_return_for_period, # Returning period return for display
+            "backtest_annual_return": backtest_annual_return, # Fixed: Return raw annual or period? Original was period. Keeping logic.
             "predicted_return": predicted_return,
             "predicted_price": predicted_price_target,
             "volatility": volatility,
@@ -333,7 +361,9 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
     logging.info(f"Using MINIMUM_ANNUAL_RETURN threshold: {MINIMUM_ANNUAL_RETURN * 100:.2f}% for {risk_level} risk")
 
     logging.info("Fetching market data...")
+    t_start_fetch = time.time()
     market_data = fetch_market_data()
+    logging.info(f"Market Data Fetch Complete. Took {time.time() - t_start_fetch:.2f}s")
     
     # Flatten assets for processing
     assets_to_process = []
@@ -341,14 +371,17 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
         for asset, data in assets.items():
             assets_to_process.append((asset, category, data))
 
-    logging.info(f"Processing {len(assets_to_process)} assets in parallel...")
+    logging.info(f"Processing {len(assets_to_process)} assets in parallel (One Pass)...")
     
     asset_performance = []
     
-    # Parallel Execution
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    t_start_process = time.time()
+    # Parallel Execution - Increased workers to 15 for faster Redis throughput
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        # We now always use ignore_filters=True in the main pass to avoid a redundant "Rescue Pass"
+        # This calculates metrics for ALL assets once, and we filter/sort/select at the very end.
         futures = {
-            executor.submit(process_single_asset, asset, category, timeframe, data, MINIMUM_ANNUAL_RETURN): asset 
+            executor.submit(process_single_asset, asset, category, timeframe, data, MINIMUM_ANNUAL_RETURN, ignore_filters=True): asset 
             for asset, category, data in assets_to_process
         }
         
@@ -357,30 +390,7 @@ def generate_strategy(risk_level, timeframe, initial_amount, base_currency="HKD"
             if result:
                 asset_performance.append(result)
 
-    logging.info(f"Total assets processed (Initial Pass): {len(asset_performance)}")
-
-    # **Rescue Pass**: If too few assets survived, retry with relaxed criteria
-    if len(asset_performance) < 5:
-        logging.info(f"⚠️ Only {len(asset_performance)} assets survived filters. Triggering Rescue Pass (ignoring soft filters)...")
-        rescue_performance = []
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            # Rerun with ignore_filters=True
-            rescue_futures = {
-                executor.submit(process_single_asset, asset, category, timeframe, data, MINIMUM_ANNUAL_RETURN, ignore_filters=True): asset 
-                for asset, category, data in assets_to_process
-            }
-            for future in as_completed(rescue_futures):
-                result = future.result()
-                if result:
-                    rescue_performance.append(result)
-        
-        # Merge results, prioritizing original performance
-        existing_assets = {p["asset"] for p in asset_performance}
-        for p in rescue_performance:
-            if p["asset"] not in existing_assets:
-                asset_performance.append(p)
-        
-        logging.info(f"Total assets processed after Rescue Pass: {len(asset_performance)}")
+    logging.info(f"Total assets processed: {len(asset_performance)}. Processing took {time.time() - t_start_process:.2f}s")
 
     if not asset_performance:
         logging.warning("❌ No assets survived even after Rescue Pass.")
