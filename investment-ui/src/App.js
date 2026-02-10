@@ -23,7 +23,15 @@ const App = () => {
   const [errorV, setErrorV] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [portfolioInput, setPortfolioInput] = useState("");
+  // Load portfolio input from localStorage on mount
+  const [portfolioInput, setPortfolioInput] = useState(() => {
+    try {
+      const saved = localStorage.getItem('portfolioInput');
+      return saved || "";
+    } catch {
+      return "";
+    }
+  });
   const [tooltip, setTooltip] = useState({ show: false, text: "", x: 0, y: 0 });
 
   const handleTooltip = (e, text) => {
@@ -38,11 +46,6 @@ const App = () => {
     // Check for empty input (whitespace-only)
     if (!input || input.trim() === "") {
       return "Portfolio data cannot be empty.";
-    }
-
-    // Treat "myself" as valid (load default portfolio from file)
-    if (input.trim().toLowerCase() === "myself") {
-      return null;
     }
 
     const lines = input.trim().split("\n");
@@ -318,16 +321,25 @@ const App = () => {
           <label style={{ display: "block", marginBottom: "8px", color: "var(--text-secondary)", fontSize: "14px" }}>Portfolio Data (Ticker, Units, Category)</label>
           <textarea
             value={portfolioInput}
-            onChange={(e) => setPortfolioInput(e.target.value)}
+            onChange={(e) => {
+              const value = e.target.value;
+              setPortfolioInput(value);
+              // Save to localStorage on every change
+              try {
+                localStorage.setItem('portfolioInput', value);
+              } catch (err) {
+                console.error('Failed to save to localStorage:', err);
+              }
+            }}
             rows="6"
             style={{ ...inputStyle, maxWidth: "100%", width: "100%", fontFamily: "monospace", resize: "vertical" }}
-            placeholder={`Type "myself" to load your saved portfolio, or enter CSV:
+            placeholder={`Enter your portfolio CSV:
 Ticker,Units,Category
 BTC,1.5,Crypto
 AAPL,10,Stocks`}
           />
           <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "8px" }}>
-            💡 <strong>Tip:</strong> Type <code>myself</code> above to automatically load from <code>my_portfolio.csv</code>.
+            💡 <strong>Tip:</strong> Your input is automatically saved in browser cache.
           </p>
         </div>
 

@@ -48,18 +48,12 @@ def analyze_user_portfolio():
         timeframe = int(data.get("timeframe", 6))
         portfolio_csv = data.get("portfolio_data") # Expecting a CSV-formatted string
         
-        # If user types "myself", treat it as empty to trigger default file load
-        if portfolio_csv and portfolio_csv.strip().lower() == "myself":
-            portfolio_csv = None
+        if not portfolio_csv or not portfolio_csv.strip():
+            return jsonify({"error": "Portfolio data is required"}), 400
 
-        if portfolio_csv:
-            # Handle potential header issues or empty trailing lines
-            portfolio_csv = portfolio_csv.strip()
-            df_holdings = pd.read_csv(StringIO(portfolio_csv))
-        elif os.path.exists(PORTFOLIO_FILE):
-             df_holdings = pd.read_csv(PORTFOLIO_FILE)
-        else:
-             return jsonify({"error": "No portfolio data provided and default file missing"}), 400
+        # Handle potential header issues or empty trailing lines
+        portfolio_csv = portfolio_csv.strip()
+        df_holdings = pd.read_csv(StringIO(portfolio_csv))
 
         # Validate required columns
         required_cols = {"Ticker", "Units", "Category"}
