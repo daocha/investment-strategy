@@ -21,6 +21,10 @@ This project is a comprehensive **Investment Strategy Platform** that integrates
   - Builds optimized portfolios based on **risk level, sentiment, technical analysis, and backtesting results**.
 - **Automated Maintenance**
   - Background worker handles **12-hour market data refreshes** and **weekly AI retraining** (HKT schedule).
+- **High-Performance Caching**
+  - Uses **Redis** for sub-millisecond data retrieval of technical indicators and market snapshots.
+  - **Automatic Fallback**: Seamlessly switches to local JSON file caching if Redis is unavailable.
+  - Periodic persistence to disk ensures cache stability across restarts.
  
 ## Preview
 ![Screenshot 2026-02-10 at 12 02 53 AM](https://github.com/user-attachments/assets/56458fbd-7066-4090-8bab-2cc667a81650)
@@ -36,9 +40,10 @@ This project is a comprehensive **Investment Strategy Platform** that integrates
 
 ## Installation
 
-### Prerequisities
+### Prerequisites
 - **Python 3.9+**
 - **Node.js 16+** & **npm**
+- **Redis Server** (Running on port 6379 by default)
 - **Git**
 
 ### Quick Start (Recommended)
@@ -89,10 +94,25 @@ The system uses an **XGBoost Classifier** to predict Buy/Sell/Hold signals.
 
 ### Analyze Custom Portfolio
 1. Click **"Analyse Custom"**.
-2. Enter your CSV data or type `myself` to load your saved portfolio.
-3. View the **Weighted Forecast** to see how your assets are predicted to perform.
+2. Enter your portfolio CSV data in the format:
+   ```
+   Ticker,Units,Category
+   BTC,1.5,Crypto
+   AAPL,10,Stocks
+   ```
+3. Your input is **automatically saved in browser cache** and restored on page refresh.
+4. View the **Weighted Forecast** to see how your assets are predicted to perform.
 
-## Troubleshooting
+### Redis Configuration
+
+The system automatically detects and connects to Redis. You can override defaults using environment variables:
+
+| Variable | Description | Default |
+| -------- | ----------- | ------- |
+| `REDIS_HOST` | Redis server hostname | `localhost` |
+| `REDIS_PORT` | Redis server port | `6379` |
+| `REDIS_DB` | Redis database index | `0` |
+| `REDIS_PASSWORD` | Optional connection password | `None` |
 
 ### Port Conflicts
 The script tries to clear ports `8848` and `3848` before starting. If you still see "Address already in use", you can manually kill processes:
