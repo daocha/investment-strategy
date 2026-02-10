@@ -14,6 +14,13 @@ BINANCE_SNAPSHOT_URL = "https://api.binance.com/api/v3/ticker/24hr"
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DAYS_IN_YEAR = 365.25
 DEFAULT_BACKTEST_PERIOD = "10y"
+PRIMARY_CACHE_PERIOD = "10y" # The base dataset period used for master historical cache
+# Redis Configuration
+REDIS_HOST = os.getenv("REDIS_HOST", "")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_DB = int(os.getenv("REDIS_DB", 0))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
+REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}" if REDIS_PASSWORD else f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 
 # Portfolio Analysis Thresholds
 RSI_THRESHOLD = 50

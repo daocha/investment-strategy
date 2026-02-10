@@ -61,11 +61,32 @@ def analyze_user_portfolio():
         else:
              return jsonify({"error": "No portfolio data provided and default file missing"}), 400
 
+        # Validate required columns
+        required_cols = {"Ticker", "Units", "Category"}
+        missing = required_cols - set(df_holdings.columns)
+        if missing:
+             # Try case-insensitive fallback for convenience
+             col_map = {c.lower(): c for c in df_holdings.columns}
+             new_df = pd.DataFrame()
+             found_all = True
+             for col in required_cols:
+                 if col.lower() in col_map:
+                     new_df[col] = df_holdings[col_map[col.lower()]]
+                 else:
+                     found_all = False
+                     break
+             if found_all:
+                 df_holdings = new_df
+             else:
+                 return jsonify({"error": f"Malformed CSV. Missing columns: {', '.join(missing)}"}), 400
+
         result = run_portfolio_analysis(df_holdings, base_currency=base_currency, timeframe=timeframe)
         return jsonify(result)
     except Exception as e:
-        logging.error(f"Error during portfolio analysis: {e}")
-        return jsonify({"error": str(e)}), 500
+        logging.error(f"❌ Error during portfolio analysis: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({"error": f"Internal Server Error: {str(e)}"}), 500
 
 @app.route("/run-verification", methods=["POST"])
 def run_accuracy_verification_simulation():

@@ -8,7 +8,10 @@ import json
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from backend.config import PORTFOLIO_FILE, MIN_RETURN_THRESHOLD, CURRENCY_SYMBOLS, DAYS_IN_YEAR, DEFAULT_BACKTEST_PERIOD, CRYPTO_ETF_MAPPING
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+
+from backend.config import PORTFOLIO_FILE, MIN_RETURN_THRESHOLD, CURRENCY_SYMBOLS, DEFAULT_BACKTEST_PERIOD, CRYPTO_ETF_MAPPING
 from backend.portfolio_optimizer import process_single_asset, convert_floats
 from backend.market_data import fetch_stock_etf_snapshot, fetch_crypto_snapshot, CustomJSONEncoder, get_fx_rate, fetch_historical_data, get_historical_fx_rate
 from backend.sentiment_analysis import analyze_sentiment_batch
@@ -37,80 +40,36 @@ def run_portfolio_analysis(df_holdings, base_currency="HKD", timeframe=6):
     portfolio_sentiment = analyze_sentiment_batch(list(sentiment_tickers))
     
     # Use a mock min_return threshold to ensure all holdings are analyzed
-    for _, row in df_holdings.iterrows():
-        asset = str(row["Ticker"]).strip()
-        units = float(row["Units"])
-        category = str(row["Category"]).strip()
+    # 1. Parallel Fetching & Processing
+    logging.info(f"🚀 Analyzing {len(df_holdings)} portfolio assets in parallel...")
+    t_start = time.time()
+    
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        future_to_asset = {}
         
-        try:
-            # 1. Fetch Current Data
-            data = None
-            if category in ["Stocks", "ETFs"]:
-                data = fetch_stock_etf_snapshot(asset)
-            elif category == "Crypto":
-                data = fetch_crypto_snapshot(asset)
+        for _, row in df_holdings.iterrows():
+            asset = str(row["Ticker"]).strip()
+            category = str(row["Category"]).strip()
+            units = float(row["Units"])
             
-            if not data:
-                logging.warning(f"⚠️ No current data for {asset}. Skipping.")
-                continue
-                
-            native_price = float(data["Close"])
-            native_currency = data.get("Currency", "USD") if category != "Crypto" else "USD"
-            native_symbol = CURRENCY_SYMBOLS.get(native_currency, native_currency)
-            
-            # Fetch Current FX rate to base_currency
-            fx_rate = get_fx_rate(native_currency, base_currency)
-            
-            # 2. Process Analytics (Pass precomputed sentiment)
-            result = process_single_asset(
-                asset, category, timeframe, data, MIN_RETURN_THRESHOLD, 
-                ignore_filters=True, 
-                precomputed_sentiment=portfolio_sentiment
+            # Submit each asset analysis as a parallel task
+            future = executor.submit(
+                analyze_single_holding, 
+                asset, category, units, timeframe, base_currency, portfolio_sentiment
             )
-            
-            if not result:
-                logging.warning(f"⚠️ Failed to process analytics for {asset}. Skipping.")
-                continue
+            future_to_asset[future] = asset
 
-            # 3. Calculate Historical Performance (Value Then)
-            # Find the price approximately 'timeframe' months ago
-            hist_df = fetch_historical_data(asset, category, period=DEFAULT_BACKTEST_PERIOD)
-            price_then = native_price
-            fx_rate_then = fx_rate
-            
-            if hist_df is not None and not hist_df.empty:
-                # Target date: now - timeframe months
-                target_date = pd.Timestamp.now() - pd.DateOffset(months=timeframe)
-                closest_idx = hist_df.index.get_indexer([target_date], method='nearest')[0]
-                if closest_idx != -1:
-                    price_then = float(hist_df["Close"].iloc[closest_idx])
-                    # Get historical FX rate for that date
-                    fx_rate_then = get_historical_fx_rate(native_currency, base_currency, date=hist_df.index[closest_idx])
+        for future in as_completed(future_to_asset):
+            try:
+                result_data = future.result()
+                if result_data:
+                    analyzed_assets.append(result_data)
+                    total_value_now += result_data["market_value"]
+                    total_value_then += result_data["market_value_then"] # We need to return this from helper
+            except Exception as e:
+                logging.error(f"❌ Error analyzing {future_to_asset[future]}: {e}")
 
-            # Valuation
-            market_value_now = units * native_price * fx_rate
-            market_value_then = units * price_then * fx_rate_then
-            
-            total_value_now += market_value_now
-            total_value_then += market_value_then
-            
-            # Asset Results Enhancement
-            result.update({
-                "units": units,
-                "market_value": market_value_now,
-                "allocation": market_value_now, # Added for UI compatibility
-                "native_currency": native_currency,
-                "native_symbol": native_symbol,
-                "base_currency": base_currency,
-                "current_price_native": native_price,
-                "predicted_price_native": result["predicted_price"],
-                "asset_name": result.get("asset_name", asset)
-            })
-            
-            analyzed_assets.append(result)
-            
-        except Exception as e:
-            logging.error(f"Error analyzing {asset}: {e}")
+    logging.info(f"Analysis loop took {time.time() - t_start:.2f}s")
 
     if not analyzed_assets or total_value_now == 0:
         return {"error": "No valid assets analyzed."}
@@ -184,19 +143,102 @@ def run_portfolio_analysis(df_holdings, base_currency="HKD", timeframe=6):
         }
     })
 
-def analyze_portfolio():
-    if not os.path.exists(PORTFOLIO_FILE):
-        logging.error(f"❌ Portfolio file not found at {PORTFOLIO_FILE}")
-        return
+def analyze_single_holding(asset, category, units, timeframe, base_currency, portfolio_sentiment):
+    """
+    Helper function to process a single holding in a separate thread.
+    Returns the enriched result dict or None.
+    """
+    try:
+        # 1. Fetch Current Data
+        data = None
+        if category in ["Stocks", "ETFs"]:
+            data = fetch_stock_etf_snapshot(asset)
+        elif category == "Crypto":
+            data = fetch_crypto_snapshot(asset)
+        
+        if not data:
+            logging.warning(f"⚠️ No current data for {asset}. Skipping.")
+            return None
+            
+        native_price = float(data["Close"])
+        native_currency = data.get("Currency", "USD") if category != "Crypto" else "USD"
+        native_symbol = CURRENCY_SYMBOLS.get(native_currency, native_currency)
+        
+        # Fetch Current FX rate to base_currency
+        fx_rate = get_fx_rate(native_currency, base_currency)
+        
+        # 2. Process Analytics (Pass precomputed sentiment)
+        result = process_single_asset(
+            asset, category, timeframe, data, MIN_RETURN_THRESHOLD, 
+            ignore_filters=True, 
+            precomputed_sentiment=portfolio_sentiment
+        )
+        
+        if not result:
+            logging.warning(f"⚠️ Failed to process analytics for {asset}. Skipping.")
+            return None
 
-    df_holdings = pd.read_csv(PORTFOLIO_FILE)
-    result = run_portfolio_analysis(df_holdings)
-    
-    output_file = os.path.join(os.path.dirname(__file__), "my_portfolio_analysis.json")
-    with open(output_file, "w") as f:
-        json.dump(result, f, indent=4, cls=CustomJSONEncoder)
-    
-    logging.info(f"✅ Portfolio analysis complete. Result saved to {output_file}")
+        base_symbol = CURRENCY_SYMBOLS.get(base_currency, base_currency)
+
+        # 3. Calculate Historical Performance (Value Then)
+        # Find the price approximately 'timeframe' months ago
+        hist_df = fetch_historical_data(asset, category, period=DEFAULT_BACKTEST_PERIOD)
+        price_then = native_price
+        fx_rate_then = fx_rate
+        
+        if hist_df is not None and not hist_df.empty:
+            # Target date: now - timeframe months
+            target_date = pd.Timestamp.now() - pd.DateOffset(months=timeframe)
+            closest_idx = hist_df.index.get_indexer([target_date], method='nearest')[0]
+            if closest_idx != -1:
+                price_then = float(hist_df["Close"].iloc[closest_idx])
+                # Get historical FX rate for that date
+                fx_rate_then = get_historical_fx_rate(native_currency, base_currency, date=hist_df.index[closest_idx])
+
+        # Valuation
+        market_value_now = units * native_price * fx_rate
+        market_value_then = units * price_then * fx_rate_then
+        
+        # Asset Results Enhancement
+        result.update({
+            "units": units,
+            "market_value": market_value_now,
+            "allocation": market_value_now, # Synonym for compatibility
+            "native_currency": native_currency,
+            "native_symbol": native_symbol,
+            "base_currency": base_currency,
+            "base_symbol": base_symbol,
+            "current_price_native": native_price,
+            "predicted_price_native": result["predicted_price"], # Was calculated in native
+            "predicted_price": result["predicted_price"] * fx_rate, # Convert to base
+            "market_value_then": market_value_then
+        })
+        
+        return result
+
+    except Exception as e:
+        logging.error(f"❌ Error inside thread for {asset}: {e}")
+        return None
 
 if __name__ == "__main__":
-    analyze_portfolio()
+    # Configure logging to stdout
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        stream=sys.stdout
+    )
+
+    if not os.path.exists(PORTFOLIO_FILE):
+        logging.error(f"❌ Portfolio file not found at {PORTFOLIO_FILE}")
+        sys.exit(1) # Exit if portfolio file is not found
+
+    df_portfolio = pd.read_csv(PORTFOLIO_FILE)
+    
+    analysis = run_portfolio_analysis(df_portfolio, base_currency="HKD")
+    
+    # Save to JSON for frontend
+    output_file = os.path.join(os.path.dirname(__file__), "my_portfolio_analysis.json")
+    with open(output_file, "w") as f:
+        json.dump(analysis, f, indent=4, cls=CustomJSONEncoder)
+        
+    logging.info(f"✅ Analysis Complete. Saved to {output_file}")
