@@ -126,8 +126,10 @@ def train_model(output_path=MODEL_PATH):
 
     # Atomic Save Logic
     if output_path == MODEL_PATH:
-        # Use a temporary file for atomic overwrite
-        temp_path = f"{output_path}.tmp"
+        # Use a temporary file with the same extension to ensure XGBoost uses the correct saver (JSON vs UBJSON)
+        # XGBoost determines format based on suffix. Using .tmp might default to UBSON.
+        suffix = os.path.splitext(output_path)[1]
+        temp_path = f"{output_path}.tmp{suffix}"
         model.save_model(temp_path)
         os.replace(temp_path, output_path)
         logging.info(f"✅ Model successfully trained and saved atomically to {output_path}")
