@@ -25,6 +25,13 @@ HKT = timezone(timedelta(hours=8))
 def refresh_all_market_data():
     """Iterates through all assets to refresh the 10Y cache and pre-populate all indicator/prediction caches."""
     logging.info("🔋 Starting scheduled market data refresh (all assets)...")
+    
+    # Force fresh data fetch by clearing existing snapshots and historical master keys
+    logging.info("🧹 Clearing market data and prediction cache to force fresh refresh...")
+    market_cleared = MARKET_DATA_CACHE.clear_market_data()
+    pred_cleared = MARKET_DATA_CACHE.clear_predictions()
+    logging.info(f"✅ Cache cleared: {market_cleared} market keys, {pred_cleared} prediction keys removed.")
+
     count = 0
     all_tickers = []
     for category, tickers in TRAINING_ASSETS.items():
@@ -75,7 +82,11 @@ def run_maintenance_cycle(is_training_day=False):
     if is_training_day:
         logging.info("🧠 Scheduled WEEKLY training starting...")
         train_model()
-        logging.info("⭐ Weekly training completed successfully.")
+        logging.info("⭐ Weekly training completed successfully. Clearing old predictions to use new model...")
+        
+        # Clear predictions AFTER model is updated so that subsequent requests use the new weights
+        count = MARKET_DATA_CACHE.clear_predictions()
+        logging.info(f"✅ Prediction cache cleared ({count} keys removed).")
 
 def main_loop():
     logging.info("🛰️ Maintenance Worker started. Watching for 05:30/16:30 Refreshes and Sunday 00:00 Training.")
