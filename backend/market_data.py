@@ -5,6 +5,7 @@ import yfinance as yf
 import time
 import json # Added json
 import os
+import fnmatch # Added for pattern matching
 import numpy as np # Added numpy
 import pandas as pd # Added pandas
 from dotenv import load_dotenv
@@ -125,6 +126,52 @@ class MarketDataCache:
     def __len__(self):
         """Returns the number of keys. Note: For Redis, this only returns the local fallback count to avoid expensive scans."""
         return len(self._local_cache)
+
+    def delete_by_pattern(self, pattern):
+        """Deletes keys matching a specific pattern (e.g., 'prediction_*')."""
+        count = 0
+        if self._redis_client:
+            try:
+                # Use SCAN to find keys with matching prefix/pattern
+                cursor = 0
+                match_pattern = self._get_redis_key(pattern)
+                while True:
+                    cursor, keys = self._redis_client.scan(cursor=cursor, match=match_pattern, count=100)
+                    if keys:
+                        self._redis_client.delete(*keys)
+                        count += len(keys)
+                    if cursor == 0:
+                        break
+                if count > 0:
+                    logging.info(f"🗑️ Cleared {count} matching keys from Redis (pattern: {pattern})")
+            except Exception as e:
+                logging.error(f"❌ Redis error in delete_by_pattern: {e}")
+        
+        # Also handle local cache
+        keys_to_delete = [k for k in self._local_cache.keys() if fnmatch.fnmatch(k, pattern)]
+        for k in keys_to_delete:
+            del self._local_cache[k]
+            count += 1
+        
+        if count > 0 and not self._redis_client:
+             logging.info(f"🗑️ Cleared {count} matching keys from local cache (pattern: {pattern})")
+        
+        return count
+
+    def clear_predictions(self):
+        """Clears all prediction-related cache entries."""
+        return self.delete_by_pattern("prediction_*")
+
+    def clear_market_data(self):
+        """Clears snapshots and historical price data to force fresh fetches."""
+        # Clear snapshots
+        count = self.delete_by_pattern("yfinance_*")
+        count += self.delete_by_pattern("binance_*")
+        # Clear historical master keys
+        count += self.delete_by_pattern("hist_*")
+        # Clear trending assets to ensure fresh AI list if enabled
+        count += self.delete_by_pattern("trending_assets")
+        return count
 
 MARKET_DATA_CACHE = MarketDataCache()
 CACHE_LOCK = threading.Lock()
