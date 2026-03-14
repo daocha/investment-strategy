@@ -5,7 +5,7 @@ import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
-const API_BASE = `http://${window.location.hostname}:8848`;
+const API_BASE = window.location.port ? `http://${window.location.hostname}:8848` : `./api`;
 
 const App = () => {
 
