@@ -72,9 +72,7 @@ if [ -d "$FRONTEND_DIR" ]; then
     echo "⚛️ Starting React Frontend on port $FRONTEND_PORT..."
     cd $FRONTEND_DIR
     # Run in subshell and capture PID
-    # run static server
-    npm run build
-    npx serve -s build -l $FRONTEND_PORT &
+    PORT=$FRONTEND_PORT npm start &
     FRONTEND_PID=$!
     # Wait for child processes (this keeps the script alive to catch the trap)
     wait $FRONTEND_PID
