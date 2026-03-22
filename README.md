@@ -124,7 +124,9 @@ lsof -ti :8848,3848 | xargs kill -9
 
 - @daocha
 
+---
+
 ## License
 
-MIT License
+This project is released under the MIT License. Add a `LICENSE` file containing the MIT text when publishing or redistributing it.
 
