@@ -44,6 +44,7 @@ This project is a comprehensive **Investment Strategy Platform** that integrates
 - **Python 3.9+**
 - **Node.js 16+** & **npm**
 - **Redis Server** (Running on port 6379 by default)
+- **Docker** & **Docker Compose** (for containerized production run)
 - **Git**
 
 ### Quick Start (Recommended)
@@ -62,6 +63,32 @@ chmod +x startup.sh
 - **Backend**: Runs on `http://localhost:8848`
 - **Frontend**: Runs on `http://localhost:3848`
 - **Maintenance**: Background worker refreshes data at 05:30/16:30 HKT.
+
+### Run Production with Docker
+
+This repository includes a multi-stage `Dockerfile` and `docker-compose.yml` to run the production stack (frontend + backend + maintenance worker + Redis) in containers.
+
+```bash
+# Optional: set API key if you use DeepSeek sentiment analysis
+export DEEPSEEK_API_KEY=your_key_here
+
+# Build images and start all services
+docker compose up --build -d
+```
+
+- **Frontend (Nginx + React production build)**: `http://localhost:3848`
+- **Backend API (Gunicorn + Flask)**: `http://localhost:8848`
+- **Redis**: internal service used by backend/worker
+
+Useful commands:
+
+```bash
+# Stream logs
+docker compose logs -f
+
+# Stop all services
+docker compose down
+```
 
 ### Manual Installation
 If you prefer identifying issues yourself:
@@ -129,4 +156,3 @@ lsof -ti :8848,3848 | xargs kill -9
 ## License
 
 This project is released under the MIT License. Add a `LICENSE` file containing the MIT text when publishing or redistributing it.
-

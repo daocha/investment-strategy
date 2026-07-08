@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+investment-ui/node_modules
+investment-ui/build
+__pycache__
+*.pyc
+.venv
+venv
+.env
+.env.*
+tests
+startup.sh
+startup-dev.sh

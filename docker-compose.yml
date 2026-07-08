@@ -1,0 +1,62 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: investment-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      target: backend-runtime
+    container_name: investment-strategy-backend
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    command: >
+      sh -c "if [ ! -f backend/xgboost_model.json ]; then python backend/train_model.py; fi &&
+      gunicorn --bind 0.0.0.0:8848 --workers 2 --threads 4 --timeout 120 backend.main:app"
+    ports:
+      - "8848:8848"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      target: backend-runtime
+    container_name: investment-strategy-worker
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    command: ["python", "backend/maintenance_worker.py"]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      target: frontend-runtime
+    container_name: investment-strategy-frontend
+    restart: unless-stopped
+    ports:
+      - "3848:80"
+    depends_on:
+      - backend
+
+volumes:
+  redis-data:
