@@ -59,7 +59,7 @@ fi
 
 # 3. Launch Backend
 echo "🐍 Starting Flask Backend on port $BACKEND_PORT..."
-python3 backend/main.py &
+FLASK_DEBUG=1 python3 backend/main.py &
 BACKEND_PID=$!
 
 # 3.5. Launch Maintenance Worker
