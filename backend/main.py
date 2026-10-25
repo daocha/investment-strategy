@@ -77,10 +77,8 @@ def analyze_user_portfolio():
         result = run_portfolio_analysis(df_holdings, base_currency=base_currency, timeframe=timeframe)
         return jsonify(result)
     except Exception as e:
-        logging.error(f"❌ Error during portfolio analysis: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-        return jsonify({"error": f"Internal Server Error: {str(e)}"}), 500
+        logging.exception(f"❌ Error during portfolio analysis: {e}")
+        return jsonify({"error": "Internal Server Error: portfolio analysis failed"}), 500
 
 @app.route("/run-verification", methods=["POST"])
 def run_accuracy_verification_simulation():
@@ -93,8 +91,10 @@ def run_accuracy_verification_simulation():
         results = verification_service.run_simulation(custom_holdings=holdings, current_timeframe_months=timeframe_months)
         return jsonify(results)
     except Exception as e:
-        logging.error(f"Error during verification: {e}")
-        return jsonify({"error": str(e)}), 500
+        logging.exception(f"Error during verification: {e}")
+        return jsonify({"error": "Internal Server Error: verification failed"}), 500
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=8848, debug=True)
+    # Debug mode exposes the Werkzeug interactive debugger (remote code execution); opt in via FLASK_DEBUG=1
+    debug_mode = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
+    app.run(host="0.0.0.0", port=8848, debug=debug_mode)

@@ -136,7 +136,8 @@ class VerificationService:
                              continue
                         allocation = [{"asset": item["asset"], "category": item["category"], "weight": item["allocation_pct"]} for item in strategy["portfolio_allocation"]]
                     except Exception as e:
-                        results.append({"timeframe": label, "error": str(e)})
+                        logging.exception(f"Strategy generation failed for {label}: {e}")
+                        results.append({"timeframe": label, "error": "Strategy generation failed for this period"})
                         continue
 
                 # 3. Process Assets (Performance & Prediction)
